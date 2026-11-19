@@ -29,8 +29,8 @@ archives:
       - README.md
       - CHANGELOG.md
 
-# Publishes a formula to the timsutton/homebrew-tap repo on each release
-# (`brew install timsutton/tap/xaea`). Needs the HOMEBREW_TAP_TOKEN secret —
+# Publishes a formula to the timsutton/homebrew-formulae repo on each release
+# (`brew install timsutton/formulae/xaea`). Needs the HOMEBREW_TAP_TOKEN secret —
 # the workflow's GITHUB_TOKEN can't push to a different repository. Skipped
 # automatically for snapshot (dry-run) builds.
 #
@@ -42,9 +42,8 @@ brews:
   - name: xaea
     repository:
       owner: timsutton
-      name: homebrew-tap
+      name: homebrew-formulae
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
     homepage: https://github.com/timsutton/xaea
     description: Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition
     license: MIT

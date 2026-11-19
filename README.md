@@ -31,7 +31,7 @@ curl -fsSL https://github.com/timsutton/xaea/releases/download/v0.1.0/xaea_0.1.0
 On Linux with Homebrew:
 
 ```sh
-brew install timsutton/tap/xaea
+brew install timsutton/formulae/xaea
 ```
 
 Or build from source (Rust ≥ 1.87): `cargo install --path .`.
@@ -191,7 +191,7 @@ goreleaser-action verify the GoReleaser binary it downloads — both its
 GoReleaser's release-workflow OIDC identity — instead of fetching it on trust.
 
 Each release also pushes an updated formula to the
-[`timsutton/homebrew-tap`](https://github.com/timsutton/homebrew-tap) repo.
+[`timsutton/homebrew-formulae`](https://github.com/timsutton/homebrew-formulae) repo.
 That needs a `HOMEBREW_TAP_TOKEN` repository secret: a fine-grained personal
 access token with *Contents: read and write* on the tap repo only (the
 workflow's built-in `GITHUB_TOKEN` can't push to another repository). Snapshot

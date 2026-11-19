@@ -72,5 +72,5 @@ jobs:
           args: ${{ inputs.snapshot && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pushes the formula to timsutton/homebrew-tap (see .goreleaser.yaml).
+          # Pushes the formula to timsutton/homebrew-formulae (see .goreleaser.yaml).
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
