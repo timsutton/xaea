@@ -1,0 +1,18 @@
+# cargo-audit configuration for GitHub Actions `cargo audit` job.
+# https://github.com/Rustsec/cargo-audit#configuration-files
+
+[advisories]
+ignore = [
+    # Marvin attack: RSA key recovery via timing of private-key operations
+    # (decrypt/sign). unaea only performs RSA PKCS#1 v1.5 *verification* with
+    # public keys from AEA certificate chains (src/sigverify.rs); there is no
+    # private key in this process for a timing sidechannel to leak.
+    # Patched only in rsa >= 0.10 (breaking API).
+    "RUSTSEC-2023-0071",
+    # Timing variability in crypto-bigint operations intended to be
+    # constant-time, reachable only when operating on secret integers.
+    # crypto-bigint here is a transitive dep of p256/p384 0.13 used solely for
+    # ECDSA public-key verification — no secret data passes through it.
+    # Patched in crypto-bigint >= 0.7.6 (requires major bumps of p256/p384).
+    "RUSTSEC-2026-0387",
+]
