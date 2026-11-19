@@ -18,7 +18,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -28,7 +28,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -39,7 +39,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The real Xcode fixture isn't in the repo, so the tests that need it
@@ -57,14 +57,14 @@ jobs:
       AEA_FIXTURE: ${{ github.workspace }}/fixtures/Xcode_27.3_beta_2.aea
       AEA_FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Keyed on the content hash, so the URL is only hit on a cache miss.
       # Saved right after the hash check (not at job end) so a failing test
       # doesn't throw away a good download.
       - id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: fixtures/Xcode_27.3_beta_2.aea
           key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
@@ -82,7 +82,7 @@ jobs:
         run: echo "$AEA_FIXTURE_SHA256  $AEA_FIXTURE" | sha256sum --check
       - name: Save fixture cache
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: fixtures/Xcode_27.3_beta_2.aea
           key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
@@ -92,11 +92,11 @@ jobs:
     name: Release build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: unaea-linux-x86_64
           path: target/release/unaea
