@@ -113,9 +113,26 @@ so the root MAC check already proves key ↔ file binding.
 - A hand-rolled base64 decoder must emit partial trailing chunks from the
   **top** of the accumulator (`KA==` -> `0x28`, not `0x80`).
 
-## Payload
+## Payload — the AA01 object stream (M2, fully decoded)
 
-Concatenated decompressed segments form a single `AA01` Apple Archive object
-stream (starting at segment 0: `AA 01 <u16le rec_len> ...` records: `TYP1`,
-`DPATP` (path), `UID1`, `GID1`, `MOD2`, ...). Reverse-engineering of this
-dialect is tracked separately (M2).
+Concatenated decompressed segments form ONE `AA01` Apple Archive object
+stream. Records: `"AA01" + u16le size` (size includes the 6-byte header),
+body = 4-byte tagged fields `TAG<F>` where `<F>` encodes the payload kind:
+`1/2/4/8` = LE int of that width; `A/B/C` = LE int of width 2/4/8;
+`P` = u16le length + bytes; `p` = u32le length + bytes.
+
+Observed tags (fixture: 30,082 D / 126,205 F / 11,254 L records):
+- `TYP{1}`: object type — `D`ir / `F`ile / `L`ink.
+- `PAT{P}` path; `LNK{P}` link target (relative, may escape via `../` —
+  clamp like unxip; the escape target never lands in the archive).
+- `UID{1}` `GID{1}` (all 0/0 here), `MOD{2}` full st_mode incl S_IF bits.
+- `DAT{A|B}` = inline data length (2- or 4-byte width tier). A file record is
+  immediately followed by its DAT bytes in the stream (not counted in the
+  record size); files span segment boundaries freely.
+- `FLG{1}`(=0x20) `AFT{1}`(=0x14) seen only on file records, constant values.
+
+Extraction fidelity proven by: 624/624 segment checksums (payload is
+Apple's bytes), exhaustive record walk (framing exact), 100% path-set match
+vs `unxip` output of the same-version .xip, and `codesign --deep --strict`
+passing on the whole extracted app. (The .aea/.xip builds differ in 2,002
+Mach-O CMS signature blobs — Apple re-signed for the AEA distribution.)
