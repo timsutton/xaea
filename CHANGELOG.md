@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* Releases publish a Homebrew formula to `timsutton/homebrew-tap`
+  (`brew install timsutton/tap/xaea`).
 * `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into
   Apple's OS-provided libcompression LZMA decoder (macOS only) instead of
   the vendored liblzma default. On M3 Max, full extracts were roughly 5%

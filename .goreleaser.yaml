@@ -28,3 +28,28 @@ archives:
       - LICENSE
       - README.md
       - CHANGELOG.md
+
+# Publishes a formula to the timsutton/homebrew-tap repo on each release
+# (`brew install timsutton/tap/xaea`). Needs the HOMEBREW_TAP_TOKEN secret —
+# the workflow's GITHUB_TOKEN can't push to a different repository. Skipped
+# automatically for snapshot (dry-run) builds.
+#
+# `brews` is deprecated in GoReleaser in favour of `homebrew_casks`, but casks
+# are macOS-only, so formulae remain the way to ship Linux binaries. Linux-only
+# for now, matching the archives above; add a macOS target to
+# `builds` and the formula picks it up with no change here.
+brews:
+  - name: xaea
+    repository:
+      owner: timsutton
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/timsutton/xaea
+    description: Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition
+    license: MIT
+    commit_author:
+      name: Timothy Sutton
+      email: tim@synthist.net
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/xaea --version")
