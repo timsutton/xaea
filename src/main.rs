@@ -128,9 +128,7 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
         let mac = env
             .verify_mac(auth.certs[0].point())
             .context("MAC verification")?;
-        integrity_ok &= mac.root_mac_ok
-            && mac.cluster_macs_ok
-            && mac.segmac_failed.is_empty();
+        integrity_ok &= mac.root_mac_ok && mac.cluster_macs_ok && mac.segmac_failed.is_empty();
         report_checks.push(serde_json::json!({
             "root_mac_ok": mac.root_mac_ok,
             "cluster_macs_ok": mac.cluster_macs_ok,

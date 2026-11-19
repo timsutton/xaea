@@ -379,7 +379,7 @@ impl<'a> Envelope<'a> {
     /// Extraction runs these synchronously and folds the segment pass into
     /// the decode pipeline via [`Self::verify_segment_macs`].
     pub fn verify_header_macs(&self, main: &[u8]) -> Result<(bool, bool, Option<usize>)> {
-        let root_key = kdf::root_header_key(&main);
+        let root_key = kdf::root_header_key(main);
         let first_chmac = &self.file[self.chmac_off..self.chmac_off + 32];
         let mut salt = first_chmac.to_vec();
         salt.extend_from_slice(&self.file[self.auth_start..self.auth_end]);
@@ -396,7 +396,7 @@ impl<'a> Envelope<'a> {
         let mut chmac_variant = None;
         let mut cluster_macs_ok = true;
         for (ci, c) in self.clusters.iter().enumerate() {
-            let ck = kdf::cluster_key(&main, c.index);
+            let ck = kdf::cluster_key(main, c.index);
             let chek = kdf::cluster_header_key(&ck);
             let stored: [u8; 32] = if ci == 0 {
                 first_chmac
@@ -463,7 +463,8 @@ impl<'a> Envelope<'a> {
         std::thread::scope(|scope| {
             let results: Vec<_> = (0..nthreads)
                 .map(|t| {
-                    let part = &segs[(t * chunk).min(segs.len())..((t + 1) * chunk).min(segs.len())];
+                    let part =
+                        &segs[(t * chunk).min(segs.len())..((t + 1) * chunk).min(segs.len())];
                     let ckeys = &ckeys;
                     scope.spawn(move || {
                         let mut failed = Vec::new();

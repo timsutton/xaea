@@ -63,5 +63,8 @@ fn real_fixture_verifies_green() {
     assert_eq!(check(&v, "trusted_root"), true);
     let chain = check(&v, "chain_ok").as_array().unwrap().clone();
     assert!(!chain.is_empty());
-    assert!(chain.iter().all(|c| c == &Value::Bool(true)), "chain: {chain:?}");
+    assert!(
+        chain.iter().all(|c| c == &Value::Bool(true)),
+        "chain: {chain:?}"
+    );
 }

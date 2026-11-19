@@ -44,15 +44,15 @@
 
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::envelope::Envelope;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
-use std::os::unix::fs::{FileExt, PermissionsExt, symlink};
+use std::os::unix::fs::{symlink, FileExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -92,7 +92,7 @@ fn create_defaults() -> (u32, u32) {
 #[cfg(target_os = "macos")]
 fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
     let st = libc::fstore_t {
-        fst_flags: libc::F_ALLOCATEALL as u32 | libc::F_PEOFPOSMODE as u32,
+        fst_flags: libc::F_ALLOCATEALL | libc::F_PEOFPOSMODE as u32,
         fst_posmode: libc::F_PEOFPOSMODE,
         fst_offset: 0,
         fst_length: size as libc::c_longlong,
@@ -115,11 +115,7 @@ fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
 #[cfg(target_os = "linux")]
 fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
     let r = unsafe {
-        libc::posix_fallocate(
-            std::os::fd::AsRawFd::as_raw_fd(f),
-            0,
-            size as libc::off_t,
-        )
+        libc::posix_fallocate(std::os::fd::AsRawFd::as_raw_fd(f), 0, size as libc::off_t)
     };
     if r == 0 {
         Ok(())
@@ -140,7 +136,7 @@ fn set_quarantine(path: &Path) -> std::io::Result<()> {
     let r = unsafe {
         libc::setxattr(
             path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
-            b"com.apple.quarantine\0".as_ptr() as *const libc::c_char,
+            c"com.apple.quarantine".as_ptr(),
             v.as_ptr() as *const libc::c_void,
             v.len(),
             0,
@@ -244,9 +240,20 @@ pub fn end_status_line() {
 /// one channel (files/links by round-robin sequence, directories by
 /// content-hash of their path).
 enum Work {
-    Mkdir { path: Box<Path> },
-    Open { seq: u64, path: Box<Path>, mode: u32 },
-    Slice { seq: u64, off: u64, piece: Piece, prealloc: u64 },
+    Mkdir {
+        path: Box<Path>,
+    },
+    Open {
+        seq: u64,
+        path: Box<Path>,
+        mode: u32,
+    },
+    Slice {
+        seq: u64,
+        off: u64,
+        piece: Piece,
+        prealloc: u64,
+    },
     /// Drain barrier: acknowledge once everything queued before it has
     /// been executed (per-writer channels are FIFO).
     Flush(std::sync::mpsc::SyncSender<()>),
@@ -361,7 +368,12 @@ fn writer_loop(
                 }
                 cur = Some((seq, f));
             }
-            Work::Slice { seq, mut off, piece, prealloc } => {
+            Work::Slice {
+                seq,
+                mut off,
+                piece,
+                prealloc,
+            } => {
                 let (cseq, f) = cur.as_mut().context("slice for file not opened")?;
                 ensure!(*cseq == seq, "slice seq {seq} but writer is on file {cseq}");
                 if prealloc > 0 {
@@ -476,7 +488,14 @@ impl Sink for DispatchSink {
                 let seq = self.obj_seq;
                 let w = seq as usize % nw;
                 if !self.dry {
-                    self.send(w, Work::Open { seq, path: rel, mode })?;
+                    self.send(
+                        w,
+                        Work::Open {
+                            seq,
+                            path: rel,
+                            mode,
+                        },
+                    )?;
                 }
                 self.cur = Some(Cur {
                     seq,
@@ -484,7 +503,11 @@ impl Sink for DispatchSink {
                     written: 0,
                     path: rec.path.clone(),
                     writer: w,
-                    prealloc: if self.prealloc && rec.dat > 0 { rec.dat } else { 0 },
+                    prealloc: if self.prealloc && rec.dat > 0 {
+                        rec.dat
+                    } else {
+                        0
+                    },
                 });
                 self.st.files += 1;
                 self.prog.files.fetch_add(1, Relaxed);
@@ -633,12 +656,15 @@ fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
         &env.file[env.sig_off..env.sig_off + crate::envelope::SIGNATURE_LEN],
         &env.signed_prefix(),
     )
-        .context("signature/chain verification")?;
+    .context("signature/chain verification")?;
     ensure!(auth.content_sig_ok, "content signature does not verify");
     ensure!(auth.sig_padded_ok, "signature field has non-zero padding");
     ensure!(auth.chain_all_ok, "certificate chain link failed to verify");
     ensure!(auth.ca_ok, "chain contains an issuer without CA:true");
-    ensure!(auth.valid_now, "chain contains an out-of-validity certificate");
+    ensure!(
+        auth.valid_now,
+        "chain contains an out-of-validity certificate"
+    );
     if !auth.trusted_root {
         eprintln!(
             "warning: signer does not chain to the vendored Apple root — content \
@@ -646,9 +672,8 @@ fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
         );
     }
     let main = env.main_key(auth.certs[0].point());
-    let (root_mac_ok, cluster_macs_ok, _) = env
-        .verify_header_macs(&main)
-        .context("MAC verification")?;
+    let (root_mac_ok, cluster_macs_ok, _) =
+        env.verify_header_macs(&main).context("MAC verification")?;
     ensure!(root_mac_ok, "root header MAC mismatch");
     ensure!(cluster_macs_ok, "cluster header MAC mismatch");
     Ok(main)
@@ -694,7 +719,7 @@ fn extract_body(
     if !opts.dry {
         std::fs::create_dir_all(&opts.out)?;
     }
-    let ck = opts.verify.then_some(()) ;
+    let ck = opts.verify.then_some(());
     let segs: Arc<Vec<SegInfo>> = Arc::new(
         env.segments()
             .iter()
@@ -752,7 +777,12 @@ fn extract_body(
         dry: opts.dry,
         txs: wtx,
         cur: None,
-        st: Stats { dirs: 0, files: 0, links: 0, bytes: 0 },
+        st: Stats {
+            dirs: 0,
+            files: 0,
+            links: 0,
+            bytes: 0,
+        },
         prog: prog.clone(),
         obj_seq: 0,
         prealloc: opts.prealloc,
@@ -788,7 +818,9 @@ fn extract_body(
     // chmod-shaped should land in the tree of an archive whose compressed
     // bytes fail their MACs.
     let segmac_failed = match segmac {
-        Some(h) => h.join().map_err(|_| anyhow::anyhow!("segment MAC thread panicked"))?,
+        Some(h) => h
+            .join()
+            .map_err(|_| anyhow::anyhow!("segment MAC thread panicked"))?,
         None => Vec::new(),
     };
     ensure!(
@@ -803,7 +835,8 @@ fn extract_body(
         for w in 0..sink.txs.len() {
             let (atx, arx) = sync_channel::<()>(1);
             sink.send(w, Work::Flush(atx))?;
-            arx.recv().map_err(|_| anyhow::anyhow!("writer {w} died mid-flush"))?;
+            arx.recv()
+                .map_err(|_| anyhow::anyhow!("writer {w} died mid-flush"))?;
         }
         let links = std::mem::take(&mut sink.links);
         sink.send(0, Work::LinkPass(links))?;
@@ -824,7 +857,9 @@ fn extract_body(
 
     let mut first_err: Option<anyhow::Error> = None;
     for h in writers {
-        let r = h.join().map_err(|_| anyhow::anyhow!("writer thread panicked"))?;
+        let r = h
+            .join()
+            .map_err(|_| anyhow::anyhow!("writer thread panicked"))?;
         if r.is_err() && first_err.is_none() {
             first_err = r.err();
         }

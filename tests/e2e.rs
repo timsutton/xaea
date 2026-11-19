@@ -123,7 +123,9 @@ fn mode_of(p: &Path) -> u32 {
 
 #[test]
 fn synthetic_verifies_green() {
-    let Some((dir, _)) = synthetic("verify") else { return };
+    let Some((dir, _)) = synthetic("verify") else {
+        return;
+    };
     let v = inspect(&dir, &["--verify", "--json"]);
     assert_eq!(v["format"], "AEA1");
     assert_eq!(v["profile"], 0);
@@ -145,7 +147,9 @@ fn synthetic_verifies_green() {
 
 #[test]
 fn synthetic_extract_fidelity() {
-    let Some((dir, man)) = synthetic("fidelity") else { return };
+    let Some((dir, man)) = synthetic("fidelity") else {
+        return;
+    };
     let out = dir.join("out");
     let run = unaea()
         .arg("extract")
@@ -196,11 +200,13 @@ fn synthetic_extract_fidelity() {
                 assert_eq!(got, want, "content of {}", e["path"]);
                 let mut h = Sha256::new();
                 h.update(&got);
+                assert_eq!(format!("{:x}", h.finalize()), e["sha256"].as_str().unwrap());
                 assert_eq!(
-                    format!("{:x}", h.finalize()),
-                    e["sha256"].as_str().unwrap()
+                    mode_of(&p),
+                    e["mode"].as_u64().unwrap() as u32,
+                    "mode of {}",
+                    e["path"]
                 );
-                assert_eq!(mode_of(&p), e["mode"].as_u64().unwrap() as u32, "mode of {}", e["path"]);
             }
             "L" => {
                 let tgt = fs::read_link(&p).unwrap();
@@ -208,14 +214,21 @@ fn synthetic_extract_fidelity() {
             }
             "D" => {
                 assert!(p.is_dir());
-                assert_eq!(mode_of(&p), e["mode"].as_u64().unwrap() as u32, "dirmode of {}", e["path"]);
+                assert_eq!(
+                    mode_of(&p),
+                    e["mode"].as_u64().unwrap() as u32,
+                    "dirmode of {}",
+                    e["path"]
+                );
             }
             _ => unreachable!(),
         }
     }
     // Escaped link target kept verbatim; nothing was created outside root.
     assert_eq!(
-        fs::read_link(out.join("T/link-out")).unwrap().to_string_lossy(),
+        fs::read_link(out.join("T/link-out"))
+            .unwrap()
+            .to_string_lossy(),
         "../../../SystemFrameworks"
     );
     fs::remove_dir_all(&dir).ok();
@@ -223,7 +236,9 @@ fn synthetic_extract_fidelity() {
 
 #[test]
 fn dry_run_matches_extract_counts() {
-    let Some((dir, man)) = synthetic("dry") else { return };
+    let Some((dir, man)) = synthetic("dry") else {
+        return;
+    };
     let run = unaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
@@ -239,7 +254,10 @@ fn dry_run_matches_extract_counts() {
     assert_eq!(stats["dirs"], man["stats"]["dirs"]);
     assert_eq!(stats["files"], man["stats"]["files"]);
     assert_eq!(stats["links"], man["stats"]["links"]);
-    assert!(!dir.join("dry-out").exists(), "dry run must not create the tree");
+    assert!(
+        !dir.join("dry-out").exists(),
+        "dry run must not create the tree"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -267,7 +285,9 @@ fn verify_report(path: &Path, extra: &[&str]) -> Option<Value> {
 
 #[test]
 fn tampering_is_detected() {
-    let Some((dir, _)) = synthetic("tamper") else { return };
+    let Some((dir, _)) = synthetic("tamper") else {
+        return;
+    };
     let aea = dir.join("archive.aea");
     let meta = inspect(&dir, &["--json"]);
     let auth_bytes = meta["auth"][0]["bytes"].as_u64().unwrap() as usize;
@@ -345,7 +365,9 @@ fn tampering_is_detected() {
 
 #[test]
 fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
-    let Some((dir, _)) = synthetic("outpolicy") else { return };
+    let Some((dir, _)) = synthetic("outpolicy") else {
+        return;
+    };
     let dirty = dir.join("dirty");
     fs::create_dir_all(&dirty).unwrap();
     fs::write(dirty.join("occupant"), b"x").unwrap();
@@ -377,7 +399,9 @@ fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
 
 #[test]
 fn evil_symlink_archives_are_refused_and_contained() {
-    let Some((dir, _)) = synthetic("evil") else { return };
+    let Some((dir, _)) = synthetic("evil") else {
+        return;
+    };
     for name in ["evil1.aea", "evil2.aea"] {
         let out = dir.join(format!("out-{name}"));
         let run = unaea()
@@ -409,7 +433,9 @@ fn evil_symlink_archives_are_refused_and_contained() {
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_flag_tags_outputs() {
-    let Some((dir, _)) = synthetic("quarantine") else { return };
+    let Some((dir, _)) = synthetic("quarantine") else {
+        return;
+    };
     let out = dir.join("q-out");
     let run = unaea()
         .arg("extract")
@@ -419,7 +445,11 @@ fn quarantine_flag_tags_outputs() {
         .arg("--quarantine")
         .output()
         .unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let probe = Command::new("xattr")
         .args(["-p", "com.apple.quarantine"])
         .arg(out.join("T/plain.txt"))
@@ -430,7 +460,13 @@ fn quarantine_flag_tags_outputs() {
 
     // And absent without the flag.
     let out2 = dir.join("q-off");
-    unaea().arg("extract").arg(dir.join("archive.aea")).arg("-o").arg(&out2).output().unwrap();
+    unaea()
+        .arg("extract")
+        .arg(dir.join("archive.aea"))
+        .arg("-o")
+        .arg(&out2)
+        .output()
+        .unwrap();
     let probe2 = Command::new("xattr")
         .args(["-p", "com.apple.quarantine"])
         .arg(out2.join("T/plain.txt"))

@@ -454,14 +454,15 @@ pub fn verify_all(
 
     let roots = split_pem(vendored_roots_pem).context("parsing vendored roots")?;
     let last = certs.last().unwrap();
-    let trusted_root = roots.iter().any(|r| r == &last.der)
-        && ca_ok
-        && verify_with(last, last).unwrap_or(false);
+    let trusted_root =
+        roots.iter().any(|r| r == &last.der) && ca_ok && verify_with(last, last).unwrap_or(false);
 
     // Content signature: DER sig at the head of the 128-byte field, zero pad
     // after. A malformed length here is a failed signature, not a fatal
     // error — the check must stay reportable (review #7).
-    let dl = der_sig_len(sig_field).ok().filter(|&d| d <= sig_field.len());
+    let dl = der_sig_len(sig_field)
+        .ok()
+        .filter(|&d| d <= sig_field.len());
     let sig_padded_ok = dl.is_some_and(|d| sig_field[d..].iter().all(|&b| b == 0));
     let digest = Sha256::digest(signed_prefix).to_vec();
     let leaf = &certs[0];
