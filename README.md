@@ -28,6 +28,12 @@ curl -fsSL https://github.com/timsutton/xaea/releases/download/v0.1.0/xaea_0.1.0
 ./xaea --help
 ```
 
+On Linux with Homebrew:
+
+```sh
+brew install timsutton/formulae/xaea
+```
+
 Or build from source (Rust ≥ 1.87): `cargo install --path .`.
 
 ## Benchmarks
@@ -183,6 +189,13 @@ Before it runs, the workflow installs
 goreleaser-action verify the GoReleaser binary it downloads — both its
 `checksums.txt` SHA-256 and that file's sigstore signature against
 GoReleaser's release-workflow OIDC identity — instead of fetching it on trust.
+
+Each release also pushes an updated formula to the
+[`timsutton/homebrew-formulae`](https://github.com/timsutton/homebrew-formulae) repo.
+That needs a `HOMEBREW_TAP_TOKEN` repository secret: a fine-grained personal
+access token with *Contents: read and write* on the tap repo only (the
+workflow's built-in `GITHUB_TOKEN` can't push to another repository). Snapshot
+dry runs never touch the tap.
 
 ## Acknowledgments
 
