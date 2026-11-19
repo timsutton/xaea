@@ -8,11 +8,17 @@ name: Perf
 # dispatch several runs to establish a baseline spread.
 
 on:
+  pull_request:
+    # Only changes that can affect speed; docs/tests-only PRs skip this.
+    paths: [src/**, Cargo.toml, Cargo.lock, .github/workflows/perf.yml]
   workflow_dispatch:
     inputs:
       runs:
         description: Timed runs per benchmark (hyperfine --runs)
         default: "5"
+      max_seconds:
+        description: Fail if mean `extract --dry-run` exceeds this (default repo variable PERF_MAX_SECONDS, else 120)
+        default: ""
       full_extract:
         description: Also benchmark a full on-disk extraction (needs ~11 GB free)
         type: boolean
@@ -21,14 +27,23 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   perf:
     name: Benchmark
     runs-on: ubuntu-latest
+    # Fork PRs can't read the fixture secret; skip rather than fail.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       AEA_FIXTURE: ${{ github.workspace }}/fixtures/Xcode_27.3_beta_2.aea
       AEA_FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
-      RUNS: ${{ inputs.runs }}
+      RUNS: ${{ inputs.runs || '3' }}
+      # Regression gate. Shared runners are noisy: keep this well above the
+      # observed baseline and tighten it as the baseline firms up.
+      MAX_SECONDS: ${{ inputs.max_seconds || vars.PERF_MAX_SECONDS || '120' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -117,3 +132,17 @@ jobs:
         with:
           name: perf-results
           path: perf/*.json
+
+      # Last, so the summary and artifact are published even when it fails.
+      - name: Enforce time limit
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          limit = float(os.environ["MAX_SECONDS"])
+          rs = {r["command"]: r for r in json.load(open("perf/readonly.json"))["results"]}
+          mean = rs["extract --dry-run"]["mean"]
+          print(f"extract --dry-run mean {mean:.2f}s (limit {limit:g}s)")
+          if mean > limit:
+              print(f"::error title=Perf regression::extract --dry-run took {mean:.1f}s on average, over the {limit:g}s limit")
+              sys.exit(1)
+          PY
