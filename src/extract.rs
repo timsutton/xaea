@@ -568,7 +568,7 @@ fn clamp(rel: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-fn sanitize(p: &[u8]) -> Result<PathBuf> {
+pub(crate) fn sanitize(p: &[u8]) -> Result<PathBuf> {
     let s = std::str::from_utf8(p).context("non-UTF8 path")?;
     clamp(s)
 }
@@ -637,7 +637,7 @@ struct SegInfo {
 /// then the root/cluster header MACs — microseconds next to decoding.
 /// Returns the main key so the caller can run the expensive segment-MAC
 /// pass concurrently with the pipeline (joined before the final pass).
-fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
+pub(crate) fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
     let chain = env
         .auth
         .iter()

@@ -1,4 +1,5 @@
 mod aa;
+mod cat;
 mod envelope;
 mod extract;
 mod kdf;
@@ -75,6 +76,28 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
+    /// Write one regular file from an AEA to stdout (like `cat`)
+    ///
+    /// Verified by default: header/signature/chain checks up front, then MAC
+    /// and checksum of every segment read before its bytes are emitted. If
+    /// the exit status is non-zero, treat anything already written as
+    /// untrustworthy. Directories and symlinks are refused.
+    Cat {
+        file: PathBuf,
+        /// Path of the member inside the archive (as printed by the archive's
+        /// records; `./x` and `a/../x` are normalized like extraction does)
+        member: String,
+        /// Skip all integrity and authenticity checks (trusted or damaged
+        /// archives only)
+        #[arg(long)]
+        no_verify: bool,
+        /// Decoder threads (default: cores-1, min 2)
+        #[arg(short, long)]
+        jobs: Option<usize>,
+        /// LZMA decoder: `liblzma` (default) or `libcompression` (macOS only)
+        #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
+        decoder: XzDecoder,
+    },
 }
 
 fn main() -> Result<()> {
@@ -101,6 +124,13 @@ fn main() -> Result<()> {
         } => extract_cmd(
             &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, quarantine, decoder,
         ),
+        Commands::Cat {
+            file,
+            member,
+            no_verify,
+            jobs,
+            decoder,
+        } => cat_cmd(&file, &member, no_verify, jobs, decoder),
     }
 }
 
@@ -348,4 +378,41 @@ fn extract_cmd(
         );
     }
     Ok(())
+}
+
+fn cat_cmd(
+    path: &std::path::Path,
+    member: &str,
+    no_verify: bool,
+    jobs: Option<usize>,
+    decoder: XzDecoder,
+) -> Result<()> {
+    use std::os::fd::FromRawFd;
+    decoder.check_available()?;
+    let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
+    let env = envelope::Envelope::parse(&file)?;
+    let cores = std::thread::available_parallelism()?.get();
+    let opts = cat::Opts {
+        verify: !no_verify,
+        decoders: jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2)),
+        decoder,
+    };
+    // Raw fd 1, not `io::stdout()`: std's stdout is line-buffered, which
+    // scans binary payloads for newlines and splits writes. ManuallyDrop
+    // keeps us from closing the process's stdout.
+    let mut out = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(1) });
+    match cat::cat(&env, member, &mut *out, &opts) {
+        Ok(_) => Ok(()),
+        // Reader went away (`| head`): not an error worth reporting.
+        Err(e)
+            if e.chain().any(|c| {
+                c.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+            }) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }

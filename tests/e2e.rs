@@ -520,3 +520,124 @@ fn libcompression_decoder_matches_liblzma() {
     assert_eq!(trees[0], trees[1], "both decoders produce the same tree");
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn cat_emits_every_file_byte_exact_and_refuses_non_files() {
+    let Some((dir, man)) = synthetic("cat") else {
+        return;
+    };
+    let aea = dir.join("archive.aea");
+    let mut saw_dir = false;
+    let mut saw_link = false;
+    for e in man["entries"].as_array().unwrap() {
+        let path = e["path"].as_str().unwrap();
+        let run = xaea().arg("cat").arg(&aea).arg(path).output().unwrap();
+        match e["t"].as_str().unwrap() {
+            "F" => {
+                assert!(
+                    run.status.success(),
+                    "cat {path}: {}",
+                    String::from_utf8_lossy(&run.stderr)
+                );
+                assert_eq!(run.stdout, unhex(e["hex"].as_str().unwrap()), "{path}");
+            }
+            "D" => {
+                // Some manifest dirs are implicit parents of `..`-escaping
+                // records (no record of their own): "not found" is right.
+                assert!(!run.status.success(), "cat of directory {path} must fail");
+                assert!(run.stdout.is_empty());
+                saw_dir |= String::from_utf8_lossy(&run.stderr).contains("is a directory");
+            }
+            "L" => {
+                saw_link = true;
+                assert!(!run.status.success(), "cat of symlink {path} must fail");
+                assert!(run.stdout.is_empty());
+                assert!(String::from_utf8_lossy(&run.stderr).contains("symlink"));
+            }
+            _ => unreachable!(),
+        }
+    }
+    assert!(saw_dir && saw_link, "fixture should cover dir + link");
+
+    // Missing member: non-zero, nothing on stdout.
+    let miss = xaea()
+        .arg("cat")
+        .arg(&aea)
+        .arg("no/such/file")
+        .output()
+        .unwrap();
+    assert!(!miss.status.success());
+    assert!(miss.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&miss.stderr).contains("not found"));
+
+    // Paths normalize like extraction: `./` prefix and `..` detours match.
+    let f = man["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["t"] == "F" && !e["hex"].as_str().unwrap().is_empty())
+        .unwrap();
+    let p = f["path"].as_str().unwrap();
+    let run = xaea()
+        .arg("cat")
+        .arg(&aea)
+        .arg(format!("./x/../{p}"))
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+    assert_eq!(run.stdout, unhex(f["hex"].as_str().unwrap()));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn cat_verifies_by_default() {
+    let Some((dir, man)) = synthetic("cat-tamper") else {
+        return;
+    };
+    let aea = dir.join("archive.aea");
+    let bad = dir.join("bad.aea");
+    let f = man["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["t"] == "F" && !e["hex"].as_str().unwrap().is_empty())
+        .unwrap();
+    let path = f["path"].as_str().unwrap();
+
+    // Flip the very last stored byte (inside the last segment's payload).
+    fs::copy(&aea, &bad).unwrap();
+    let len = fs::metadata(&bad).unwrap().len() as usize;
+    flip_byte(&bad, len - 1);
+
+    // Reading every file must either succeed byte-exact (target lives in an
+    // untouched segment) or fail loudly; it may never emit wrong bytes with
+    // exit 0. At least one file lives in the damaged segment.
+    let mut failed = 0;
+    for e in man["entries"].as_array().unwrap() {
+        if e["t"] != "F" {
+            continue;
+        }
+        let run = xaea()
+            .arg("cat")
+            .arg(&bad)
+            .arg(e["path"].as_str().unwrap())
+            .output()
+            .unwrap();
+        if run.status.success() {
+            assert_eq!(run.stdout, unhex(e["hex"].as_str().unwrap()));
+        } else {
+            failed += 1;
+        }
+    }
+    assert!(failed > 0, "a flipped payload byte must be caught");
+
+    // --no-verify is the explicit override for damaged archives.
+    let forced = xaea()
+        .arg("cat")
+        .arg(&bad)
+        .arg(path)
+        .arg("--no-verify")
+        .output();
+    assert!(forced.is_ok());
+    fs::remove_dir_all(&dir).ok();
+}

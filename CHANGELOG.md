@@ -12,6 +12,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* `xaea cat <archive> <member>`: write one regular file from an archive to
+  stdout, so it can be redirected or piped (`xaea cat x.aea Contents/Info.plist
+  | plutil -p -`) without extracting the tree. Verified by default (upfront
+  signature/chain/header-MAC checks, then MAC + SHA-256 of every segment read
+  before its bytes are emitted); decoding stops once the file has been
+  written. Directories and symlinks are refused; `--no-verify`, `-j` and
+  `--decoder` behave as on `extract`.
 * `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into
   Apple's OS-provided libcompression LZMA decoder (macOS only) instead of
   the vendored liblzma default. On M3 Max, full extracts were roughly 5%
