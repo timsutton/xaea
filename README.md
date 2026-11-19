@@ -178,6 +178,12 @@ are deferred until a macOS runner is available for the private repo.
 The workflow also accepts a manual `snapshot` dispatch that dry-runs the
 whole pipeline without publishing.
 
+Before it runs, the workflow installs
+[`cosign`](https://github.com/sigstore/cosign-installer), which makes
+goreleaser-action verify the GoReleaser binary it downloads — both its
+`checksums.txt` SHA-256 and that file's sigstore signature against
+GoReleaser's release-workflow OIDC identity — instead of fetching it on trust.
+
 ## Acknowledgments
 
 * [saagarjha/unxip](https://github.com/saagarjha/unxip) — the inspiration

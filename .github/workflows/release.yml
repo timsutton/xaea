@@ -50,6 +50,15 @@ jobs:
           version: 0.17.1
       - name: Install cargo-zigbuild
         run: cargo install --locked cargo-zigbuild
+      # Without cosign on PATH, goreleaser-action only checks the downloaded
+      # archive against the published checksums.txt; with it, the action also
+      # verifies that file's sigstore signature against GoReleaser's own
+      # release-workflow OIDC identity (cosign v3 bundle format, so the pinned
+      # goreleaser below must stay ≥ v2.13.0 — v2.20.2 does). Verification
+      # happens inside the action; no signature of *our* artifacts is involved.
+      # https://github.com/goreleaser/goreleaser-action#verification
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: GoReleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
