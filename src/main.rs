@@ -49,6 +49,13 @@ enum Commands {
         /// Writer threads (default: 4; APFS likes a small fixed count)
         #[arg(short = 'w', long)]
         writers: Option<usize>,
+        /// Pre-reserve each file's extents before writing (helps on some
+        /// volumes; measured neutral-to-worse on APFS/NVMe, so off by default)
+        #[arg(long)]
+        prealloc: bool,
+        /// Tag extracted objects with com.apple.quarantine (macOS only)
+        #[arg(long)]
+        quarantine: bool,
     },
 }
 
@@ -70,7 +77,11 @@ fn main() -> Result<()> {
             dry_run,
             jobs,
             writers,
-        } => extract_cmd(&file, &out, json, dry_run, jobs, writers),
+            prealloc,
+            quarantine,
+        } => extract_cmd(
+            &file, &out, json, dry_run, jobs, writers, prealloc, quarantine,
+        ),
     }
 }
 
@@ -147,6 +158,7 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
         "format": "AEA1",
         "profile": env.profile.id(),
         "profile_name": "hkdf_sha256_hmac__none__ecdsa_p256",
+        "scrypt_strength": env.scrypt_strength,
         "file_size": file.len(),
         "auth": env.auth.iter().map(|(k, v)| serde_json::json!({"key": k, "bytes": v.len()})).collect::<Vec<_>>(),
         "root": {
@@ -212,6 +224,7 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_cmd(
     path: &std::path::Path,
     out: &std::path::Path,
@@ -219,11 +232,22 @@ fn extract_cmd(
     dry_run: bool,
     jobs: Option<usize>,
     writers: Option<usize>,
+    prealloc: bool,
+    quarantine: bool,
 ) -> Result<()> {
+    if quarantine && !cfg!(target_os = "macos") {
+        anyhow::bail!("--quarantine is only meaningful on macOS");
+    }
     let t0 = std::time::Instant::now();
     let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
     let env = envelope::Envelope::parse(&file)?;
+    anyhow::ensure!(
+        !env.profile.encrypted(),
+        "profile {} is encrypted: extraction supports profile 0 only \
+         (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
+        env.profile.id()
+    );
     if !dry_run && out.exists() {
         anyhow::ensure!(
             out.read_dir()?.next().is_none(),
@@ -237,6 +261,8 @@ fn extract_cmd(
         dry: dry_run,
         decoders: jobs.unwrap_or_else(|| cores.saturating_sub(6).max(2)),
         writers: writers.unwrap_or(4),
+        prealloc,
+        quarantine,
     };
     let st = extract::extract(&env, path, &opts)?;
     let secs = t0.elapsed().as_secs_f64();

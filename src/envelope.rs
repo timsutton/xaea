@@ -76,7 +76,6 @@ pub struct Cluster {
     pub nextchmac_off: usize,
     pub seghmacs_off: usize,
     pub data_off: usize,
-    pub end_off: usize,
 }
 
 #[derive(Debug)]
@@ -86,7 +85,6 @@ pub struct Segment<'a> {
     pub orig: u32,
     pub comp: u32,
     pub cksum: &'a [u8],
-    pub hdr: &'a [u8], // the full on-disk segment header record
     pub mac: &'a [u8],
     pub data: &'a [u8],
     /// Absolute file offset of the segment's stored bytes (for pread-based
@@ -247,7 +245,6 @@ impl<'a> Envelope<'a> {
                 nextchmac_off,
                 seghmacs_off,
                 data_off,
-                end_off: cur,
             });
             idx += n as u64;
             cidx += 1;
@@ -299,7 +296,6 @@ impl<'a> Envelope<'a> {
                     orig,
                     comp: comp as u32,
                     cksum: &file[ho + 8..ho + seg_hdr_len],
-                    hdr: &file[ho..ho + seg_hdr_len],
                     mac: &file[c.seghmacs_off + (s as usize) * 32..][..32],
                     data_off: doff,
                     data: &file[doff..doff + comp],

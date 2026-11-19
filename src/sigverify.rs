@@ -21,7 +21,6 @@ const OID_RSA_SHA384: &[u8] = &[42, 134, 72, 134, 247, 13, 1, 1, 12];
 const OID_RSA_SHA512: &[u8] = &[42, 134, 72, 134, 247, 13, 1, 1, 13];
 const OID_EC_PUBLIC: &[u8] = &[42, 134, 72, 206, 61, 2, 1];
 const OID_RSA_ENC: &[u8] = &[42, 134, 72, 134, 247, 13, 1, 1, 1];
-const OID_SECP256R1: &[u8] = &[42, 134, 72, 206, 61, 3, 1, 7];
 
 /// Split a (possibly multi-cert) PEM blob into DER certificates.
 pub fn split_pem(pem: &[u8]) -> Result<Vec<Vec<u8>>> {
@@ -133,12 +132,6 @@ impl<'a> Der<'a> {
         self.i = i + len;
         Ok((tag, i, len))
     }
-    fn done(&self) -> bool {
-        self.i >= self.end()
-    }
-    fn end(&self) -> usize {
-        self.b.len()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +147,6 @@ pub struct ParsedCert {
     tbs: Vec<u8>,
     spki_der: Vec<u8>,
     spki_alg: Vec<u8>,
-    spki_params: Vec<u8>,
     point: Vec<u8>,
     sig_alg_oid: Vec<u8>,
     sig: Vec<u8>,
@@ -259,11 +251,6 @@ pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
     let alg_slice = &spki[spki_children[0].1..spki_children[0].1 + spki_children[0].2];
     let alg_children = children_named(alg_slice, "alg")?;
     let spki_alg = alg_slice[alg_children[0].1..alg_children[0].1 + alg_children[0].2].to_vec();
-    let spki_params = if alg_children.len() > 1 {
-        alg_slice[alg_children[1].1..alg_children[1].1 + alg_children[1].2].to_vec()
-    } else {
-        vec![]
-    };
     let (pb_tag, pb_cs, pb_cl) = spki_children[1];
     ensure!(pb_tag == 0x03, "spki pubkey not BIT STRING");
     let point = spki[pb_cs + 1..pb_cs + pb_cl].to_vec();
@@ -289,7 +276,6 @@ pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
         tbs: tbs_full,
         spki_der,
         spki_alg,
-        spki_params,
         point,
         sig_alg_oid,
         sig,

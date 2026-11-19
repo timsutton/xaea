@@ -34,9 +34,6 @@ impl Piece {
     pub fn len(&self) -> usize {
         self.end - self.start
     }
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +41,11 @@ pub struct Record {
     pub typ: u8, // b'D', b'F', b'L'
     pub path: Vec<u8>,
     pub link: Option<Vec<u8>>,
+    // Parsed but not applied: chown requires root (Apple's own CLI refuses
+    // too when run unprivileged); kept for a future `--Owners` option.
+    #[allow(dead_code)]
     pub uid: u32,
+    #[allow(dead_code)]
     pub gid: u32,
     pub mode: u32,
     pub dat: u64,

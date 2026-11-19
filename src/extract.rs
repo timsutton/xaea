@@ -43,6 +43,92 @@ pub struct Opts {
     pub dry: bool,
     pub decoders: usize,
     pub writers: usize,
+    /// Reserve each file's full length (fcntl/posix_fallocate) before the
+    /// first write so APFS doesn't grow extents mid-blob.
+    pub prealloc: bool,
+    /// Tag created objects with com.apple.quarantine (macOS only).
+    pub quarantine: bool,
+}
+
+/// Effective create defaults under the current umask; matching modes skip a
+/// chmod/fchmod syscall (~137k of them across a full Xcode tree otherwise).
+fn create_defaults() -> (u32, u32) {
+    let mask = unsafe {
+        let m = libc::umask(0);
+        libc::umask(m);
+        m
+    } as u32;
+    (0o666 & !mask, 0o777 & !mask)
+}
+
+#[cfg(target_os = "macos")]
+fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
+    let st = libc::fstore_t {
+        fst_flags: libc::F_ALLOCATEALL as u32 | libc::F_PEOFPOSMODE as u32,
+        fst_posmode: libc::F_PEOFPOSMODE,
+        fst_offset: 0,
+        fst_length: size as libc::c_longlong,
+        fst_bytesalloc: 0,
+    };
+    let r = unsafe {
+        libc::fcntl(
+            std::os::fd::AsRawFd::as_raw_fd(f),
+            libc::F_PREALLOCATE,
+            &st as *const libc::fstore_t,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
+    let r = unsafe {
+        libc::posix_fallocate(
+            std::os::fd::AsRawFd::as_raw_fd(f),
+            0,
+            size as libc::off_t,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(r))
+    }
+}
+
+/// macOS Gatekeeper quarantine tag; no-op elsewhere (callers gate the flag).
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn set_quarantine(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let v = format!("{:04X};{:08X};unaea;", 0x0001, t);
+    let r = unsafe {
+        libc::setxattr(
+            path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
+            b"com.apple.quarantine\0".as_ptr() as *const libc::c_char,
+            v.as_ptr() as *const libc::c_void,
+            v.len(),
+            0,
+            0,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn set_quarantine(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 // ------------------------------------------------------------ status (^T)
@@ -128,13 +214,24 @@ enum Work {
         f: Arc<File>,
         off: u64,
         piece: Piece,
+        /// Bytes to reserve up front on this first slice (0 = nothing).
+        prealloc: u64,
     },
 }
 
 fn writer_loop(rx: Receiver<Work>) -> Result<()> {
     while let Ok(w) = rx.recv() {
         match w {
-            Work::Slice { f, mut off, piece } => {
+            Work::Slice {
+                f,
+                mut off,
+                piece,
+                prealloc,
+            } => {
+                if prealloc > 0 {
+                    // Allocation failure isn't fatal — writes still work.
+                    let _ = preallocate(&f, prealloc);
+                }
                 let mut b = piece.bytes();
                 while !b.is_empty() {
                     let n = f.write_at(b, off).context("pwrite")?;
@@ -157,6 +254,7 @@ struct CurFile {
     written: u64,
     path: Vec<u8>,
     writer: usize,
+    prealloc: u64,
 }
 
 struct DispatchSink {
@@ -167,6 +265,10 @@ struct DispatchSink {
     st: Stats,
     prog: Arc<Progress>,
     mkdir_parents_seen: HashSet<PathBuf>,
+    file_default: u32,
+    dir_default: u32,
+    prealloc: bool,
+    quarantine: bool,
 }
 
 impl DispatchSink {
@@ -207,8 +309,13 @@ impl Sink for DispatchSink {
                 if !self.dry {
                     std::fs::create_dir_all(&full)
                         .with_context(|| format!("mkdir {}", full.display()))?;
-                    std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("chmod {}", full.display()))?;
+                    if mode != self.dir_default {
+                        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
+                            .with_context(|| format!("chmod {}", full.display()))?;
+                    }
+                    if self.quarantine {
+                        let _ = set_quarantine(&full);
+                    }
                     self.mkdir_parents_seen.insert(full.clone());
                 }
                 self.st.dirs += 1;
@@ -230,6 +337,9 @@ impl Sink for DispatchSink {
                     }
                     symlink(&target, &full)
                         .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
+                    if self.quarantine {
+                        let _ = set_quarantine(&full);
+                    }
                 }
                 self.st.links += 1;
             }
@@ -245,8 +355,13 @@ impl Sink for DispatchSink {
                         .truncate(true)
                         .open(&full)
                         .with_context(|| format!("create {}", full.display()))?;
-                    f.set_permissions(std::fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("fchmod {}", full.display()))?;
+                    if mode != self.file_default {
+                        f.set_permissions(std::fs::Permissions::from_mode(mode))
+                            .with_context(|| format!("fchmod {}", full.display()))?;
+                    }
+                    if self.quarantine {
+                        let _ = set_quarantine(&full);
+                    }
                     fd = Some(Arc::new(f));
                 }
                 let writer = self.st.files as usize % self.txs.len();
@@ -257,6 +372,11 @@ impl Sink for DispatchSink {
                     written: 0,
                     path: rec.path.clone(),
                     writer,
+                    prealloc: if self.prealloc && rec.dat > 0 {
+                        rec.dat
+                    } else {
+                        0
+                    },
                 });
                 self.st.files += 1;
                 self.prog.files.fetch_add(1, Relaxed);
@@ -278,6 +398,7 @@ impl Sink for DispatchSink {
                 f: c.f.clone(),
                 off: c.off - len,
                 piece,
+                prealloc: std::mem::take(&mut c.prealloc),
             };
             self.txs[c.writer]
                 .send(work)
@@ -423,6 +544,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     }
     drop(dtx);
 
+    let (file_default, dir_default) = create_defaults();
     let mut sink = DispatchSink {
         root: opts.out.clone(),
         dry: opts.dry,
@@ -431,6 +553,10 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
         st: Stats { dirs: 0, files: 0, links: 0, bytes: 0 },
         prog: prog.clone(),
         mkdir_parents_seen: HashSet::new(),
+        file_default,
+        dir_default,
+        prealloc: opts.prealloc,
+        quarantine: opts.quarantine,
     };
     let mut stream = Stream::new(&mut sink);
 
@@ -454,6 +580,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     }
     stream.finish()?;
     drop(stream);
+    let parser_done = prog.started.elapsed().as_secs_f64();
     sink.close_cur()?;
     let st = Stats {
         dirs: sink.st.dirs,
@@ -472,6 +599,13 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     }
     for h in decoders {
         let _ = h.join();
+    }
+    if std::env::var_os("UNAEA_STATS").is_some() {
+        let total = prog.started.elapsed().as_secs_f64();
+        eprintln!(
+            "[stats] parse+dispatch done at {parser_done:.1}s; writer drain +{:.1}s; total {total:.1}s",
+            total - parser_done
+        );
     }
     maybe_print_status(&prog, nseg);
     end_status_line();
