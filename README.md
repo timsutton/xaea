@@ -58,7 +58,7 @@ Options on `extract`:
 
 | flag | meaning |
 |---|---|
-| `--no-verify` | skip signature/chain/MAC/checksum verification (trusted input only) |
+| `--no-verify` | skip all integrity/authenticity checks (trusted or damaged input only; tampering goes unnoticed) |
 | `-j/--jobs` | decoder threads (default: cores−1, min 2) |
 | `-w/--writers` | writer threads (default: 6 — optimal on APFS/NVMe) |
 | `--dry-run` | decode + parse everything, write nothing |
@@ -85,7 +85,10 @@ report (non-zero exit if anything fails, so it is CI-usable):
   full integrity verification — establish provenance yourself.
 
 `--no-verify` skips all of it; it exists for recovering damaged archives,
-not for speed.
+not for speed. A tampered archive then extracts silently, but you can
+still validate an extracted Xcode yourself with
+`codesign --verify --deep --strict Xcode.app` (checks Apple's code
+signature over the app's sealed contents, not the AEA container itself).
 
 Extraction fidelity on the real fixture was proven by: 624/624 segment
 checksums, exhaustive record walk, 100 % path-set match with `unxip`'s
