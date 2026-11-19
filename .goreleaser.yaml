@@ -6,18 +6,27 @@
 version: 2
 
 builds:
-  - builder: rust
+  # Run on a macOS runner. The darwin targets use plain `cargo build` (the
+  # Apple SDK handles both architectures natively); zigbuild is for the
+  # Linux targets only, giving a consistent glibc floor (2.30, measured).
+  - id: darwin
+    builder: rust
     binary: xaea
+    command: build
     flags:
       - --release
       - --locked
     targets:
-      # Linux only for now — a darwin asset needs a macOS runner, which
-      # GitHub doesn't offer for private repos (see PR notes). The rust
-      # builder drives `cargo zigbuild` by default and runs `rustup target
-      # add` per target: x86_64 builds natively, aarch64 is cross-linked
-      # with zig, so both build on one ubuntu runner with a consistent
-      # glibc floor (2.30, measured).
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+  - id: linux
+    builder: rust
+    binary: xaea
+    command: zigbuild
+    flags:
+      - --release
+      - --locked
+    targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
 
