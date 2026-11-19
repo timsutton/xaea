@@ -2,8 +2,9 @@
 name = "unaea"
 version = "0.1.0"
 edition = "2021"
-# trim_ascii (sigverify PEM handling)
-rust-version = "1.80"
+# RustCrypto floor: rsa 0.10 / crypto-bigint >=0.7.6 (the patched versions for
+# RUSTSEC-2023-0071 / RUSTSEC-2026-0387) both declare 1.87.
+rust-version = "1.87"
 description = "Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition"
 license = "MIT OR Apache-2.0"
 
@@ -11,17 +12,21 @@ license = "MIT OR Apache-2.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 memmap2 = "0.9"
-sha2 = "0.10"
-hmac = "0.12"
-hkdf = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
+hkdf = "0.13"
 x509-parser = "0.17"
-p256 = { version = "0.13", features = ["ecdsa"] }
-p384 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
+p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
 xz2 = { version = "0.1.7", features = ["static"] }
-signature = "2"
-ecdsa = { version = "0.16", features = ["verifying"] }
-rsa = { version = "0.9", features = ["sha2"] }
+signature = "3"
+ecdsa = "0.17"
+# Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;
+# 0.10 dropped the old `sha2` alias feature). No getrandom/signing path.
+rsa = { version = "0.10", default-features = false, features = [
+    "std", "encoding", "pkcs1v15",
+] }
 serde_json = "1"
 
 [profile.release]

@@ -200,7 +200,10 @@ fn synthetic_extract_fidelity() {
                 assert_eq!(got, want, "content of {}", e["path"]);
                 let mut h = Sha256::new();
                 h.update(&got);
-                assert_eq!(format!("{:x}", h.finalize()), e["sha256"].as_str().unwrap());
+                // sha2 0.11 output arrays no longer Display as hex
+                let digest: [u8; 32] = h.finalize().into();
+                let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                assert_eq!(hex, e["sha256"].as_str().unwrap());
                 assert_eq!(
                     mode_of(&p),
                     e["mode"].as_u64().unwrap() as u32,

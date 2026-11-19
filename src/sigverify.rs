@@ -377,7 +377,7 @@ fn verify_with(issuer: &ParsedCert, signed: &ParsedCert) -> Result<bool> {
         use rsa::pkcs1v15::{Signature as RsaSig, VerifyingKey};
         use rsa::pkcs8::DecodePublicKey;
         use rsa::signature::Verifier;
-        use rsa::RsaPublicKey;
+        use rsa::PublicKey as RsaPublicKey;
         let pubk =
             RsaPublicKey::from_public_key_der(&issuer.spki_der).context("issuer rsa pubkey")?;
         let sig = RsaSig::try_from(signed.sig.as_slice()).context("rsa sig der")?;
