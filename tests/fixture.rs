@@ -33,13 +33,13 @@ fn real_fixture_verifies_green() {
         eprintln!("SKIP: fixture not found at {}", path.display());
         return;
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_unaea"))
+    let out = Command::new(env!("CARGO_BIN_EXE_xaea"))
         .arg("inspect")
         .arg(&path)
         .arg("--verify")
         .arg("--json")
         .output()
-        .expect("run unaea inspect");
+        .expect("run xaea inspect");
     assert!(
         out.status.success(),
         "verify failed: {}",

@@ -1,10 +1,10 @@
-# unaea — a fast extractor for Apple Encrypted Archives (Xcode edition)
+# xaea — a fast extractor for Apple Encrypted Archives (Xcode edition)
 
-`unaea` unpacks `.aea` archives — Apple Encrypted Archive, the container
+`xaea` unpacks `.aea` archives — Apple Encrypted Archive, the container
 Apple has shipped for years inside IPSW/OTA restore images (where it is
 encrypted) and now uses for Xcode distribution (Xcode 27 beta era,
 replacing `.xip`), where it is signed but *not* encrypted (profile 0).
-`unaea` targets that Xcode profile-0 use case, and extracts faster than
+`xaea` targets that Xcode profile-0 use case, and extracts faster than
 Apple's own `archiveutil extractXcodeAEA`, with full integrity verification
 of the container, the signing chain, and every segment.
 
@@ -22,8 +22,8 @@ run one at a time, warm cache:
 
 | tool | time |
 |---|---|
-| **unaea** (verification on, the default) | **10.6 s** |
-| **unaea** `--no-verify` | 9.0 s |
+| **xaea** (verification on, the default) | **10.6 s** |
+| **xaea** `--no-verify` | 9.0 s |
 | unxip (same-version `.xip`, for scale) | 24.8 s |
 | Apple `archiveutil extractXcodeAEA` | 40.0 s |
 
@@ -36,7 +36,7 @@ Design: LZMA decoder threads read segments with `pread` and decode them
 out of order; a reorder + parse thread runs the AA01 object-stream parser
 with zero-copy blob pieces; a small pool of writer threads executes *all*
 filesystem syscalls (mkdir/open/chmod/symlink/pwrite) fed by per-writer
-ordered channels. Instrumentation (`UNAEA_STATS=1`) showed syscall
+ordered channels. Instrumentation (`XAEA_STATS=1`) showed syscall
 serialization, not write throughput, is the wall — so the parser thread
 issues none.
 
@@ -44,10 +44,10 @@ issues none.
 
 ```sh
 # Inspect + fully verify (MACs, checksums, signature chain)
-unaea inspect Xcode_27.3_beta_2.aea --verify [--json] [--no-checksums]
+xaea inspect Xcode_27.3_beta_2.aea --verify [--json] [--no-checksums]
 
 # Extract
-unaea extract Xcode_27.3_beta_2.aea -o ./Xcode-out
+xaea extract Xcode_27.3_beta_2.aea -o ./Xcode-out
 ```
 
 Progress: press **Ctrl-T** (`SIGINFO`) while extracting for a one-line
@@ -134,10 +134,10 @@ Two small permission details:
 ## Development
 
 ```sh
-cargo build --release          # binary in target/release/unaea
+cargo build --release          # binary in target/release/xaea
 cargo test                     # unit + synthetic end-to-end suite
 AEA_FIXTURE=fixtures/Xcode_27.3_beta_2.aea cargo test -- --ignored   # real-artifact checks
-UNAEA_STATS=1 ./target/release/unaea extract …   # pipeline timing breakdown
+XAEA_STATS=1 ./target/release/xaea extract …   # pipeline timing breakdown
 ```
 
 The test suite builds a synthetic, fully signed AEA (multi-cluster,

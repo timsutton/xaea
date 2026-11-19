@@ -17,13 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn unaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_unaea"))
+fn xaea() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_xaea"))
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "unaea-e2e-{}-{}-{}",
+        "xaea-e2e-{}-{}-{}",
         tag,
         std::process::id(),
         std::time::SystemTime::now()
@@ -68,12 +68,12 @@ fn synthetic(tag: &str) -> Option<(PathBuf, Value)> {
 }
 
 fn inspect(dir: &Path, extra: &[&str]) -> Value {
-    let out = unaea()
+    let out = xaea()
         .arg("inspect")
         .arg(dir.join("archive.aea"))
         .args(extra)
         .output()
-        .expect("run unaea inspect");
+        .expect("run xaea inspect");
     assert!(
         out.status.success(),
         "inspect failed: {}",
@@ -151,7 +151,7 @@ fn synthetic_extract_fidelity() {
         return;
     };
     let out = dir.join("out");
-    let run = unaea()
+    let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -242,7 +242,7 @@ fn dry_run_matches_extract_counts() {
     let Some((dir, man)) = synthetic("dry") else {
         return;
     };
-    let run = unaea()
+    let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -275,7 +275,7 @@ fn flip_byte(path: &Path, off: usize) {
 /// report and exits 1; only unparseable structure yields `None` — which is
 /// itself a detection, so every caller asserts on the outcome either way.
 fn verify_report(path: &Path, extra: &[&str]) -> Option<Value> {
-    let out = unaea()
+    let out = xaea()
         .arg("inspect")
         .arg(path)
         .arg("--verify")
@@ -318,7 +318,7 @@ fn tampering_is_detected() {
     flip_byte(&c1, rootmac_off + 5);
     let v = verify_report(&c1, &["--no-checksums"]).expect("root MAC flip still reportable");
     assert_eq!(check(&v, "root_mac_ok"), false, "root MAC flip detected");
-    let st = unaea()
+    let st = xaea()
         .arg("inspect")
         .arg(&c1)
         .arg("--verify")
@@ -327,7 +327,7 @@ fn tampering_is_detected() {
         .unwrap();
     assert!(!st.status.success(), "failing checks exit non-zero");
     // extract refuses the same archive; --no-verify is the override hatch.
-    let refused = unaea()
+    let refused = xaea()
         .arg("extract")
         .arg(&c1)
         .arg("-o")
@@ -335,7 +335,7 @@ fn tampering_is_detected() {
         .output()
         .unwrap();
     assert!(!refused.status.success(), "extract verifies by default");
-    let forced = unaea()
+    let forced = xaea()
         .arg("extract")
         .arg(&c1)
         .arg("-o")
@@ -375,7 +375,7 @@ fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
     fs::create_dir_all(&dirty).unwrap();
     fs::write(dirty.join("occupant"), b"x").unwrap();
 
-    let blocked = unaea()
+    let blocked = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -388,7 +388,7 @@ fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
         "clear error message"
     );
 
-    let ok = unaea()
+    let ok = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -407,7 +407,7 @@ fn evil_symlink_archives_are_refused_and_contained() {
     };
     for name in ["evil1.aea", "evil2.aea"] {
         let out = dir.join(format!("out-{name}"));
-        let run = unaea()
+        let run = xaea()
             .arg("extract")
             .arg(dir.join(name))
             .arg("-o")
@@ -440,7 +440,7 @@ fn quarantine_flag_tags_outputs() {
         return;
     };
     let out = dir.join("q-out");
-    let run = unaea()
+    let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -459,11 +459,11 @@ fn quarantine_flag_tags_outputs() {
         .output()
         .unwrap();
     assert!(probe.status.success(), "quarantine xattr present");
-    assert!(String::from_utf8_lossy(&probe.stdout).contains("unaea"));
+    assert!(String::from_utf8_lossy(&probe.stdout).contains("xaea"));
 
     // And absent without the flag.
     let out2 = dir.join("q-off");
-    unaea()
+    xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg("-o")
@@ -492,7 +492,7 @@ fn libcompression_decoder_matches_liblzma() {
     let mut trees = Vec::new();
     for dec in ["liblzma", "libcompression"] {
         let out = dir.join(format!("out-{dec}"));
-        let run = unaea()
+        let run = xaea()
             .arg("extract")
             .arg(dir.join("archive.aea"))
             .arg("-o")

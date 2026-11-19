@@ -1,5 +1,5 @@
 [package]
-name = "unaea"
+name = "xaea"
 version = "0.1.0"
 edition = "2021"
 # RustCrypto floor: rsa 0.10 / crypto-bigint >=0.7.6 (the patched versions for

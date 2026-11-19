@@ -133,7 +133,7 @@ fn set_quarantine(path: &Path) -> std::io::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let v = format!("{:04X};{:08X};unaea;", 0x0001, t);
+    let v = format!("{:04X};{:08X};xaea;", 0x0001, t);
     let r = unsafe {
         libc::setxattr(
             path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
@@ -862,7 +862,7 @@ fn extract_body(
     for h in decoders {
         let _ = h.join();
     }
-    if std::env::var_os("UNAEA_STATS").is_some() {
+    if std::env::var_os("XAEA_STATS").is_some() {
         let total = prog.started.elapsed().as_secs_f64();
         eprintln!(
             "[stats] parse+dispatch done at {parser_done:.1}s; writer drain +{:.1}s; total {total:.1}s",
