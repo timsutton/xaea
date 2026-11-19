@@ -1,0 +1,7 @@
+/target
+/fixtures/*
+!/fixtures/.gitkeep
+/extracted*/
+*.aea
+.DS_Store
+*.xip
