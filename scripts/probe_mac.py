@@ -30,7 +30,7 @@ root_off = rootmac_off + 32
 chmac_off = root_off + 0x30
 
 # leaf point from chain pem
-pem = open("assets/signing-chain.pem", "rb").read()
+pem = open("scripts/signing-chain.pem", "rb").read()
 certs, cur = [], None
 for line in pem.split(b"\n"):
     if b"BEGIN" in line: cur = []
