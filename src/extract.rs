@@ -1,12 +1,20 @@
 //! Parallel extraction of the AA01 payload.
 //!
-//! Pipeline (M3): `D` decoder threads pread + LZMA-decode segments (out of
+//! Pipeline: `D` decoder threads pread + LZMA-decode segments (out of
 //! order) → bounded channel → this thread reorders to strict payload order
-//! and runs the AA01 record parser → file-blob pieces are dispatched
-//! zero-copy (Arc<[u8]> views) to `W` writer threads via per-writer
-//! channels. Slices of one file always go to the same writer, preserving
-//! per-file order; the parser holds each file's fd in an Arc so slices
-//! `pwrite` at explicit offsets while the parser has already moved on.
+//! and runs the AA01 record parser → work items (mkdir / symlink / open /
+//! blob slices) are dispatched to `W` writer threads via per-writer
+//! channels. ALL filesystem syscalls execute on writers: the parser is pure
+//! CPU + dispatch (instrumentation showed parser-issued syscalls were the
+//! wall-clock bottleneck, not write throughput). Ordering rules:
+//!
+//! * files/links pick a writer by round-robin sequence — their Open/Mklnk
+//!   and all blob slices share that one FIFO channel;
+//! * directories hash-route by path, and file/link parents are additionally
+//!   created on demand (`create_dir_all`, stat-fast when present), so no
+//!   cross-channel ordering assumption is ever made;
+//! * blob pieces are zero-copy Arc<[u8]> views of decoded segment buffers,
+//!   `pwrite`d at explicit offsets.
 //!
 //! Memory is bounded by the two channel capacities: at most
 //! (seg_queue + D) decoded buffers plus the pieces still queued by writers
@@ -20,7 +28,7 @@
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::envelope::Envelope;
 use anyhow::{Context, Result, bail, ensure};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{FileExt, PermissionsExt, symlink};
@@ -209,28 +217,91 @@ pub fn end_status_line() {
 
 // ---------------------------------------------------------------- writers
 
+/// Messages to a writer thread. All filesystem *syscalls* (mkdir, open,
+/// chmod, symlink, quarantine, pwrite) happen on writer threads so the
+/// parser stays pure CPU + dispatch; per-writer channels are FIFO, so any
+/// ordering a path needs is guaranteed by routing that path's messages to
+/// one channel (files/links by round-robin sequence, directories by
+/// content-hash of their path).
 enum Work {
-    Slice {
-        f: Arc<File>,
-        off: u64,
-        piece: Piece,
-        /// Bytes to reserve up front on this first slice (0 = nothing).
-        prealloc: u64,
-    },
+    Mkdir { path: Box<Path>, mode: u32 },
+    Mklnk { path: Box<Path>, target: Box<str> },
+    Open { seq: u64, path: Box<Path>, mode: u32 },
+    Slice { seq: u64, off: u64, piece: Piece, prealloc: u64 },
 }
 
-fn writer_loop(rx: Receiver<Work>) -> Result<()> {
+fn writer_loop(
+    rx: Receiver<Work>,
+    root: PathBuf,
+    file_default: u32,
+    dir_default: u32,
+    quarantine: bool,
+) -> Result<()> {
+    // Open file being written; closed implicitly when the next Open (or the
+    // channel end) replaces/drops it.
+    let mut cur: Option<(u64, File)> = None;
     while let Ok(w) = rx.recv() {
         match w {
-            Work::Slice {
-                f,
-                mut off,
-                piece,
-                prealloc,
-            } => {
+            Work::Mkdir { path, mode } => {
+                let full = root.join(path);
+                std::fs::create_dir_all(&full)
+                    .with_context(|| format!("mkdir {}", full.display()))?;
+                if mode != dir_default {
+                    std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
+                        .with_context(|| format!("chmod {}", full.display()))?;
+                }
+                if quarantine {
+                    let _ = set_quarantine(&full);
+                }
+            }
+            Work::Mklnk { path, target } => {
+                let full = root.join(path);
+                if let Some(p) = full.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                match std::fs::remove_file(&full) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => Err(e).with_context(|| format!("replace {}", full.display()))?,
+                }
+                symlink(target.as_ref(), &full)
+                    .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
+                if quarantine {
+                    let _ = set_quarantine(&full);
+                }
+            }
+            Work::Open { seq, path, mode } => {
+                let full = root.join(path);
+                // Always ensure the parent: a sibling writer may own its
+                // mkdir and not have run it yet; create_dir_all is a cheap
+                // stat when the dir exists, and EEXIST races are tolerated.
+                if let Some(p) = full.parent() {
+                    std::fs::create_dir_all(p)
+                        .with_context(|| format!("mkdir -p {}", p.display()))?;
+                }
+                let f = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&full)
+                    .with_context(|| format!("create {}", full.display()))?;
+                // Skip fchmod when open(2) already produced the mode via the
+                // umask default — see create_defaults() for the rationale.
+                if mode != file_default {
+                    f.set_permissions(std::fs::Permissions::from_mode(mode))
+                        .with_context(|| format!("fchmod {}", full.display()))?;
+                }
+                if quarantine {
+                    let _ = set_quarantine(&full);
+                }
+                cur = Some((seq, f));
+            }
+            Work::Slice { seq, mut off, piece, prealloc } => {
+                let (cseq, f) = cur.as_mut().context("slice for file not opened")?;
+                ensure!(*cseq == seq, "slice seq {seq} but writer is on file {cseq}");
                 if prealloc > 0 {
                     // Allocation failure isn't fatal — writes still work.
-                    let _ = preallocate(&f, prealloc);
+                    let _ = preallocate(f, prealloc);
                 }
                 let mut b = piece.bytes();
                 while !b.is_empty() {
@@ -247,9 +318,10 @@ fn writer_loop(rx: Receiver<Work>) -> Result<()> {
 
 // ------------------------------------------------------------ parser sink
 
-struct CurFile {
-    f: Arc<File>,
-    off: u64,
+/// Bookkeeping for the file record currently being streamed; the actual fd
+/// lives on its writer thread.
+struct Cur {
+    seq: u64,
     expect: u64,
     written: u64,
     path: Vec<u8>,
@@ -258,17 +330,26 @@ struct CurFile {
 }
 
 struct DispatchSink {
-    root: PathBuf,
     dry: bool,
     txs: Vec<SyncSender<Work>>,
-    cur: Option<CurFile>,
+    cur: Option<Cur>,
     st: Stats,
     prog: Arc<Progress>,
-    mkdir_parents_seen: HashSet<PathBuf>,
-    file_default: u32,
-    dir_default: u32,
+    /// Files + links share this round-robin counter for writer selection.
+    obj_seq: u64,
     prealloc: bool,
-    quarantine: bool,
+}
+
+/// FNV-1a over the path so all messages *about one directory* (its own
+/// mkdir) land on one channel; children get their own channel but create
+/// their parent on demand, so no cross-channel ordering is required.
+fn route_hash(path: &[u8], nw: usize) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in path {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h as usize % nw
 }
 
 impl DispatchSink {
@@ -281,19 +362,14 @@ impl DispatchSink {
                 c.written,
                 c.expect
             );
-            // Arc<File> drops here; the fd actually closes once the last
-            // queued slice referencing it has been written.
         }
         Ok(())
     }
 
-    /// create_dir_all, skipping parents we already ensured this run.
-    fn ensure_parent(&mut self, p: &Path) -> Result<()> {
-        if self.mkdir_parents_seen.insert(p.to_path_buf()) {
-            std::fs::create_dir_all(p)
-                .with_context(|| format!("mkdir -p {}", p.display()))?;
-        }
-        Ok(())
+    fn send(&self, w: usize, work: Work) -> Result<()> {
+        self.txs[w]
+            .send(work)
+            .context("writer channel closed (writer died?)")
     }
 }
 
@@ -301,22 +377,14 @@ impl Sink for DispatchSink {
     fn record(&mut self, rec: &Record) -> Result<()> {
         self.close_cur()?;
         let rel = sanitize(&rec.path)
-            .with_context(|| format!("record path {:?}", String::from_utf8_lossy(&rec.path)))?;
-        let full = self.root.join(&rel);
+            .with_context(|| format!("record path {:?}", String::from_utf8_lossy(&rec.path)))?
+            .into_boxed_path();
         let mode = rec.mode & 0o7777;
+        let nw = self.txs.len();
         match rec.typ {
             b'D' => {
                 if !self.dry {
-                    std::fs::create_dir_all(&full)
-                        .with_context(|| format!("mkdir {}", full.display()))?;
-                    if mode != self.dir_default {
-                        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
-                            .with_context(|| format!("chmod {}", full.display()))?;
-                    }
-                    if self.quarantine {
-                        let _ = set_quarantine(&full);
-                    }
-                    self.mkdir_parents_seen.insert(full.clone());
+                    self.send(route_hash(&rec.path, nw), Work::Mkdir { path: rel, mode })?;
                 }
                 self.st.dirs += 1;
             }
@@ -326,62 +394,35 @@ impl Sink for DispatchSink {
                     .as_ref()
                     .map(|l| link_target(l))
                     .context("link record without LNK")??;
+                self.obj_seq += 1;
                 if !self.dry {
-                    if let Some(p) = full.parent() {
-                        self.ensure_parent(p)?;
-                    }
-                    match std::fs::remove_file(&full) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => Err(e).with_context(|| format!("replace {}", full.display()))?,
-                    }
-                    symlink(&target, &full)
-                        .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
-                    if self.quarantine {
-                        let _ = set_quarantine(&full);
-                    }
+                    let w = self.obj_seq as usize % nw;
+                    self.send(
+                        w,
+                        Work::Mklnk { path: rel, target: target.into_boxed_str() },
+                    )?;
                 }
                 self.st.links += 1;
             }
             b'F' => {
-                let mut fd = None;
+                self.obj_seq += 1;
+                let seq = self.obj_seq;
+                let w = seq as usize % nw;
                 if !self.dry {
-                    if let Some(p) = full.parent() {
-                        self.ensure_parent(p)?;
-                    }
-                    let f = OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .open(&full)
-                        .with_context(|| format!("create {}", full.display()))?;
-                    if mode != self.file_default {
-                        f.set_permissions(std::fs::Permissions::from_mode(mode))
-                            .with_context(|| format!("fchmod {}", full.display()))?;
-                    }
-                    if self.quarantine {
-                        let _ = set_quarantine(&full);
-                    }
-                    fd = Some(Arc::new(f));
+                    self.send(w, Work::Open { seq, path: rel, mode })?;
                 }
-                let writer = self.st.files as usize % self.txs.len();
-                self.cur = Some(CurFile {
-                    f: fd.unwrap_or_else(|| Arc::clone(empty_marker())),
-                    off: 0,
+                self.cur = Some(Cur {
+                    seq,
                     expect: rec.dat,
                     written: 0,
                     path: rec.path.clone(),
-                    writer,
-                    prealloc: if self.prealloc && rec.dat > 0 {
-                        rec.dat
-                    } else {
-                        0
-                    },
+                    writer: w,
+                    prealloc: if self.prealloc && rec.dat > 0 { rec.dat } else { 0 },
                 });
                 self.st.files += 1;
                 self.prog.files.fetch_add(1, Relaxed);
             }
-            t => bail!("unknown object type {:?} at {}", t as char, full.display()),
+            t => bail!("unknown object type {:?} at {rel:?}", t as char),
         }
         Ok(())
     }
@@ -389,30 +430,22 @@ impl Sink for DispatchSink {
     fn blob(&mut self, piece: Piece) -> Result<()> {
         let c = self.cur.as_mut().context("blob outside file record")?;
         let len = piece.len() as u64;
-        c.off += len;
+        let off = c.written;
         c.written += len;
         self.st.bytes += len;
         self.prog.bytes_out.fetch_add(len, Relaxed);
         if !self.dry {
+            let writer = c.writer;
             let work = Work::Slice {
-                f: c.f.clone(),
-                off: c.off - len,
+                seq: c.seq,
+                off,
                 piece,
                 prealloc: std::mem::take(&mut c.prealloc),
             };
-            self.txs[c.writer]
-                .send(work)
-                .context("writer channel closed (writer died?)")?;
+            self.send(writer, work)?;
         }
         Ok(())
     }
-}
-
-/// Placeholder fd used in dry runs (never written to).
-fn empty_marker() -> &'static Arc<File> {
-    use std::sync::OnceLock;
-    static M: OnceLock<Arc<File>> = OnceLock::new();
-    M.get_or_init(|| Arc::new(File::open("/dev/null").expect("/dev/null")))
 }
 
 // ------------------------------------------------------------ path safety
@@ -512,12 +545,18 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     install_status_signal();
 
     // Writers: per-writer ordered channels.
+    let (file_default, dir_default) = create_defaults();
     let nw = opts.writers.max(1);
     let (wtx, wrx): (Vec<SyncSender<Work>>, Vec<Receiver<Work>>) =
         (0..nw).map(|_| sync_channel::<Work>(32)).unzip();
     let writers: Vec<_> = wrx
         .into_iter()
-        .map(|rx| thread::spawn(move || writer_loop(rx)))
+        .map(|rx| {
+            let (root, q) = (opts.out.clone(), opts.quarantine);
+            thread::spawn(move || {
+                writer_loop(rx, root, file_default, dir_default, q)
+            })
+        })
         .collect();
 
     // Decoders: pull segment indices, pread + decode, hand results over a
@@ -544,19 +583,14 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     }
     drop(dtx);
 
-    let (file_default, dir_default) = create_defaults();
     let mut sink = DispatchSink {
-        root: opts.out.clone(),
         dry: opts.dry,
         txs: wtx,
         cur: None,
         st: Stats { dirs: 0, files: 0, links: 0, bytes: 0 },
         prog: prog.clone(),
-        mkdir_parents_seen: HashSet::new(),
-        file_default,
-        dir_default,
+        obj_seq: 0,
         prealloc: opts.prealloc,
-        quarantine: opts.quarantine,
     };
     let mut stream = Stream::new(&mut sink);
 
@@ -612,5 +646,44 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     match first_err {
         Some(e) => Err(e),
         None => Ok(st),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_policy() {
+        assert_eq!(clamp("a/b/c").unwrap(), PathBuf::from("a/b/c"));
+        assert_eq!(clamp("a/./b").unwrap(), PathBuf::from("a/b"));
+        assert_eq!(clamp("a/b/../c").unwrap(), PathBuf::from("a/c"));
+        assert_eq!(clamp("../../x").unwrap(), PathBuf::from("x"));
+        assert_eq!(clamp("a/../../x").unwrap(), PathBuf::from("x"));
+        assert_eq!(clamp("./x").unwrap(), PathBuf::from("x"));
+        assert!(clamp("/abs").is_err(), "absolute paths rejected");
+        assert!(clamp("").is_err());
+        assert!(clamp("..").is_err(), "pure escape clamps to nothing");
+        // The exact synthetic-fixture case:
+        assert_eq!(
+            sanitize(b"T/../../esc/../escaped/inside.bin").unwrap(),
+            PathBuf::from("escaped/inside.bin")
+        );
+        assert!(sanitize(&[b'x', 0xff, b'y']).is_err(), "non-UTF8 rejected");
+        // Link targets stay verbatim, but absolute ones are rejected.
+        assert_eq!(link_target(b"a/../../b").unwrap(), "a/../../b");
+        assert!(link_target(b"/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn route_hash_deterministic_and_in_range() {
+        let h = route_hash(b"some/dir", 6);
+        assert!(h < 6);
+        assert_eq!(h, route_hash(b"some/dir", 6));
+        let mut spread = std::collections::HashSet::new();
+        for i in 0..60 {
+            spread.insert(route_hash(format!("dir/{i}").as_bytes(), 6));
+        }
+        assert!(spread.len() >= 5, "hash should spread across writers");
     }
 }
