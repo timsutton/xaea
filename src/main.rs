@@ -6,6 +6,7 @@ mod sigverify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use envelope::XzDecoder;
 use std::path::PathBuf;
 
 /// unaea — fast extractor for Apple Encrypted Archives (Xcode edition)
@@ -30,6 +31,10 @@ enum Commands {
         /// Skip the full checksum pass when used with --verify
         #[arg(long)]
         no_checksums: bool,
+        /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
+        /// `libcompression` (Apple's OS-provided library; macOS only)
+        #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
+        decoder: XzDecoder,
     },
     /// Extract an AEA's payload to a directory
     Extract {
@@ -60,6 +65,10 @@ enum Commands {
         /// Tag extracted objects with com.apple.quarantine (macOS only)
         #[arg(long)]
         quarantine: bool,
+        /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
+        /// `libcompression` (Apple's OS-provided library; macOS only)
+        #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
+        decoder: XzDecoder,
     },
 }
 
@@ -71,7 +80,8 @@ fn main() -> Result<()> {
             json,
             verify,
             no_checksums,
-        } => inspect(&file, json, verify, no_checksums),
+            decoder,
+        } => inspect(&file, json, verify, no_checksums, decoder),
         Commands::Extract {
             file,
             out,
@@ -82,8 +92,9 @@ fn main() -> Result<()> {
             writers,
             prealloc,
             quarantine,
+            decoder,
         } => extract_cmd(
-            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, quarantine,
+            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, quarantine, decoder,
         ),
     }
 }
@@ -99,7 +110,14 @@ fn human(n: u64) -> String {
     format!("{v:.2} {}", U[i])
 }
 
-fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool) -> Result<()> {
+fn inspect(
+    path: &std::path::Path,
+    json: bool,
+    verify: bool,
+    no_checksums: bool,
+    decoder: XzDecoder,
+) -> Result<()> {
+    decoder.check_available()?;
     let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
     let env = envelope::Envelope::parse(&file)?;
@@ -138,7 +156,8 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
         }));
         if !no_checksums {
             let t0 = std::time::Instant::now();
-            let (ok, failed) = env.verify_checksums(std::thread::available_parallelism()?.get())?;
+            let (ok, failed) =
+                env.verify_checksums(std::thread::available_parallelism()?.get(), decoder)?;
             integrity_ok &= failed.is_empty();
             report_checks.push(serde_json::json!({
                 "checksums_ok": ok, "checksums_failed": failed,
@@ -258,7 +277,9 @@ fn extract_cmd(
     writers: Option<usize>,
     prealloc: bool,
     quarantine: bool,
+    decoder: XzDecoder,
 ) -> Result<()> {
+    decoder.check_available()?;
     if quarantine && !cfg!(target_os = "macos") {
         anyhow::bail!("--quarantine is only meaningful on macOS");
     }
@@ -291,6 +312,7 @@ fn extract_cmd(
         prealloc,
         quarantine,
         verify: !no_verify,
+        decoder,
     };
     let st = extract::extract(&env, path, &opts)?;
     let secs = t0.elapsed().as_secs_f64();
@@ -302,6 +324,7 @@ fn extract_cmd(
                 "out": out.display().to_string(),
                 "dry_run": dry_run,
                 "verified": !no_verify,
+                "decoder": decoder.name(),
                 "decoders": opts.decoders, "writers": opts.writers,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,

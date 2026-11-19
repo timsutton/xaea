@@ -43,11 +43,10 @@
 //! SIGINFO, the same report is available via `SIGUSR1`.
 
 use crate::aa::{Piece, Record, Sink, Stream};
-use crate::envelope::Envelope;
+use crate::envelope::{Envelope, XzDecoder};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::Read;
 use std::os::unix::fs::{symlink, FileExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
@@ -76,6 +75,8 @@ pub struct Opts {
     /// Enforce MACs, signature/chain policy and per-segment checksums
     /// (default on; `--no-verify` clears).
     pub verify: bool,
+    /// LZMA implementation for segment decoding.
+    pub decoder: XzDecoder,
 }
 
 /// Effective create defaults under the current umask; matching modes skip a
@@ -602,20 +603,13 @@ fn decode_segment(
     orig: u32,
     expect: Option<[u8; 32]>,
     index: usize,
+    dec: XzDecoder,
 ) -> Result<Arc<[u8]>> {
     let buf: Arc<[u8]> = if comp == orig {
         Arc::from(read_pread(fh, data_off, comp as usize)?.into_boxed_slice())
     } else {
         let raw = read_pread(fh, data_off, comp as usize)?;
-        let mut out: Vec<u8> = Vec::with_capacity(orig as usize);
-        xz2::read::XzDecoder::new(&raw[..])
-            .read_to_end(&mut out)
-            .context("xz decode")?;
-        ensure!(
-            out.len() as u32 == orig,
-            "xz decoded size mismatch ({} vs {orig})",
-            out.len()
-        );
+        let out = crate::envelope::decode_xz(&raw, orig as usize, dec)?;
         Arc::from(out.into_boxed_slice())
     };
     if let Some(want) = expect {
@@ -752,6 +746,7 @@ fn extract_body(
     // Decoders: pull segment indices, pread + decode, hand results over a
     // bounded channel (results carry errors so the parser can surface them).
     let nd = opts.decoders.max(1);
+    let decoder = opts.decoder;
     let (dtx, drx) = sync_channel::<Result<(usize, Arc<[u8]>)>>(nd + 4);
     let next = Arc::new(AtomicUsize::new(0));
     let mut decoders = Vec::new();
@@ -763,7 +758,7 @@ fn extract_body(
                 break;
             }
             let sg = &segs[i];
-            let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i)
+            let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i, decoder)
                 .map(|b| (i, b))
                 .with_context(|| format!("decode segment {i}"));
             if dtx.send(r).is_err() {

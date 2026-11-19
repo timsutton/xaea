@@ -7,13 +7,114 @@ use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 
-/// Decompress one standalone .xz-stream segment.
-pub fn decode_xz(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut dec = xz2::read::XzDecoder::new(data);
-    let mut out = Vec::new();
-    dec.read_to_end(&mut out)?;
-    Ok(out)
+/// Which LZMA (.xz) implementation decodes segments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum XzDecoder {
+    /// liblzma (xz-utils), statically linked into unaea — portable default
+    #[default]
+    Liblzma,
+    /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
+    /// only; ~8% faster per core in measurement
+    Libcompression,
+}
+
+impl XzDecoder {
+    pub fn name(self) -> &'static str {
+        match self {
+            XzDecoder::Liblzma => "liblzma",
+            XzDecoder::Libcompression => "libcompression",
+        }
+    }
+
+    /// Fail early (before any work) if this decoder isn't available here.
+    pub fn check_available(self) -> Result<()> {
+        ensure!(
+            self != XzDecoder::Libcompression || cfg!(target_os = "macos"),
+            "--decoder libcompression is only available on macOS"
+        );
+        Ok(())
+    }
+}
+
+/// Decompress one standalone .xz-stream segment whose decoded size `orig`
+/// is known from the segment header; anything else is an error.
+pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder) -> Result<Vec<u8>> {
+    match dec {
+        XzDecoder::Liblzma => {
+            use std::io::Read;
+            let mut out = Vec::with_capacity(orig);
+            xz2::read::XzDecoder::new(data)
+                .read_to_end(&mut out)
+                .context("xz decode")?;
+            ensure!(
+                out.len() == orig,
+                "xz decoded size mismatch ({} vs {orig})",
+                out.len()
+            );
+            Ok(out)
+        }
+        #[cfg(target_os = "macos")]
+        XzDecoder::Libcompression => libcompression::decode(data, orig),
+        #[cfg(not(target_os = "macos"))]
+        XzDecoder::Libcompression => bail!("libcompression is only available on macOS"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod libcompression {
+    use anyhow::{ensure, Result};
+    use std::cell::RefCell;
+
+    /// COMPRESSION_LZMA: LZMA2 in an .xz container (<compression.h>).
+    const COMPRESSION_LZMA: i32 = 0x306;
+
+    #[link(name = "compression")]
+    extern "C" {
+        fn compression_decode_buffer(
+            dst: *mut u8,
+            dst_size: usize,
+            src: *const u8,
+            src_size: usize,
+            scratch: *mut core::ffi::c_void,
+            algorithm: i32,
+        ) -> usize;
+        fn compression_decode_scratch_buffer_size(algorithm: i32) -> usize;
+    }
+
+    thread_local! {
+        // One scratch buffer per decoder thread instead of letting
+        // libcompression allocate one per call.
+        static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![
+            0u8;
+            unsafe { compression_decode_scratch_buffer_size(COMPRESSION_LZMA) }
+        ]);
+    }
+
+    /// The output buffer is exactly `orig` bytes: a spare byte (to detect an
+    /// over-long stream, which decode_buffer silently truncates) would force
+    /// a realloc+copy when the Vec becomes a boxed slice, and measured 5x
+    /// peak RSS. Over-long streams are instead caught by the per-segment
+    /// SHA-256 when verifying.
+    pub fn decode(data: &[u8], orig: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::<u8>::with_capacity(orig);
+        let n = SCRATCH.with_borrow_mut(|scratch| unsafe {
+            compression_decode_buffer(
+                out.as_mut_ptr(),
+                orig,
+                data.as_ptr(),
+                data.len(),
+                scratch.as_mut_ptr().cast(),
+                COMPRESSION_LZMA,
+            )
+        });
+        ensure!(
+            n == orig,
+            "libcompression xz decode failed or size mismatch ({n} vs {orig})"
+        );
+        // SAFETY: compression_decode_buffer initialized the first n bytes.
+        unsafe { out.set_len(n) };
+        Ok(out)
+    }
 }
 
 pub const ROOT_HEADER_LEN: usize = 0x30;
@@ -490,7 +591,7 @@ impl<'a> Envelope<'a> {
     /// Verify per-segment checksums. Empirically (Xcode 27.3 b2) the checksum
     /// is over the *decoded* (decompressed) segment data, not the stored bytes;
     /// segments stored uncompressed (orig == comp) trivially match either way.
-    pub fn verify_checksums(&self, threads: usize) -> Result<(u64, Vec<u32>)> {
+    pub fn verify_checksums(&self, threads: usize, dec: XzDecoder) -> Result<(u64, Vec<u32>)> {
         ensure!(
             self.root.checksum == 2,
             "checksum verification currently supports SHA-256 only"
@@ -520,7 +621,7 @@ impl<'a> Envelope<'a> {
                             let decoded = if data.len() as u32 == *orig {
                                 Cow::Borrowed(*data)
                             } else {
-                                match decode_xz(data) {
+                                match decode_xz(data, *orig as usize, dec) {
                                     Ok(d) => Cow::Owned(d),
                                     Err(_) => {
                                         failed.push(*idx);

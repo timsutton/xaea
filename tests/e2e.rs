@@ -478,3 +478,45 @@ fn quarantine_flag_tags_outputs() {
     assert!(!probe2.status.success(), "no quarantine by default");
     fs::remove_dir_all(&dir).ok();
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn libcompression_decoder_matches_liblzma() {
+    let Some((dir, _)) = synthetic("libcompression") else {
+        return;
+    };
+    let v = inspect(&dir, &["--verify", "--json", "--decoder", "libcompression"]);
+    assert_eq!(check(&v, "checksums_ok"), 5);
+    assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
+
+    let mut trees = Vec::new();
+    for dec in ["liblzma", "libcompression"] {
+        let out = dir.join(format!("out-{dec}"));
+        let run = unaea()
+            .arg("extract")
+            .arg(dir.join("archive.aea"))
+            .arg("-o")
+            .arg(&out)
+            .args(["--json", "--decoder", dec])
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{dec}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let stats: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert_eq!(stats["decoder"], dec);
+        let mut kinds = HashMap::new();
+        walk(&out, "", &mut kinds);
+        let mut contents: Vec<_> = kinds
+            .iter()
+            .filter(|(_, k)| **k == 'F')
+            .map(|(p, _)| (p.clone(), fs::read(out.join(p)).unwrap()))
+            .collect();
+        contents.sort();
+        trees.push((kinds, contents));
+    }
+    assert_eq!(trees[0], trees[1], "both decoders produce the same tree");
+    fs::remove_dir_all(&dir).ok();
+}

@@ -63,6 +63,7 @@ Options on `extract`:
 | `-w/--writers` | writer threads (default: 6 — optimal on APFS/NVMe) |
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
+| `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |
 | `--quarantine` | tag outputs with `com.apple.quarantine` (macOS only, off by default like other CLI extractors) |
 | `--json` | machine-readable summary |
 

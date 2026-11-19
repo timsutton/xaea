@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+* `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into
+  Apple's OS-provided libcompression LZMA decoder (macOS only) instead of
+  the vendored liblzma default; ~5–6% faster full extracts on M3 Max.
+* `scripts/bench.sh`: reusable end-to-end hyperfine harness comparing
+  named variants of `unaea extract` on a real archive.
+
 ## 0.1.0 — 2026-11-19
 
 First release.
