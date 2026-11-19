@@ -64,7 +64,20 @@ xaea inspect Xcode_27.3_beta_2.aea --verify [--json] [--no-checksums]
 
 # Extract
 xaea extract Xcode_27.3_beta_2.aea -o ./Xcode-out
+
+# Write one file from the archive to stdout (redirect or pipe it)
+xaea cat Xcode_27.3_beta_2.aea Xcode-beta.app/Contents/Info.plist > Info.plist
 ```
+
+`cat` has no index to consult — the payload is one ordered record stream — so
+it decodes segments in parallel from the start and stops as soon as the
+member's last byte is out. That is far less work than a full extract but more
+than a plain file read. Verification is on by default and checks each segment's
+MAC and SHA-256 before its bytes are written; it does not run the full-file
+segment-MAC pass over segments it never reads (use `inspect --verify` for a
+whole-archive audit). Bytes are streamed, so if `xaea` exits non-zero, treat
+whatever was already written as untrustworthy. Directories and symlinks are
+refused; `--no-verify`, `-j` and `--decoder` behave as on `extract`.
 
 Progress: press **Ctrl-T** (`SIGINFO`) while extracting for a one-line
 status report — segments, payload written, rate, file count. On Linux,
