@@ -10,9 +10,9 @@ of the container, the signing chain, and every segment.
 
 The format was reverse-engineered against a real Apple artifact and
 documented (including four errata in the public spec) in
-[FORMAT-NOTES.md](FORMAT-NOTES.md). The measured history behind the
+[FORMAT-NOTES.md](doc/FORMAT-NOTES.md). The measured history behind the
 benchmarks — architecture rationale, tuning data, rejected experiments —
-is in [PERFORMANCE-NOTES.md](PERFORMANCE-NOTES.md).
+is in [PERFORMANCE-NOTES.md](doc/PERFORMANCE-NOTES.md).
 
 ## Install
 
@@ -160,7 +160,7 @@ The test suite builds a synthetic, fully signed AEA (multi-cluster,
 capacity padding, cross-segment blobs, stored segments, clamped paths,
 symlinks, unicode) with `scripts/make_test_aea.py` and round-trips it
 through verify + extract; the fixture-gated tests re-check every documented
-fact in FORMAT-NOTES.md against the real Apple file.
+fact in doc/FORMAT-NOTES.md against the real Apple file.
 
 ### Releasing
 
@@ -188,4 +188,4 @@ whole pipeline without publishing.
   policy follows bsdtar/unxip practice.
 * [kinnay/AEA](https://github.com/kinnay/AEA) `FORMAT.md` — the starting
   point for the envelope layout; the errata found against Apple's real
-  artifact are documented in FORMAT-NOTES.md.
+  artifact are documented in doc/FORMAT-NOTES.md.

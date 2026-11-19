@@ -1,6 +1,6 @@
 //! AEA envelope parsing per kinnay's FORMAT.md (github.com/kinnay/AEA),
 //! with errata verified against Apple's real Xcode 27.3 beta 2 artifact
-//! (see FORMAT-NOTES.md).
+//! (see doc/FORMAT-NOTES.md).
 
 use crate::kdf;
 use anyhow::{bail, ensure, Context, Result};

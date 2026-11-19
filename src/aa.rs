@@ -1,7 +1,7 @@
 //! Incremental parser for the `AA01` Apple Archive object stream that an AEA
 //! payload decodes to.
 //!
-//! Empirically established on Xcode 27.3 b2 (see FORMAT-NOTES.md): a record
+//! Empirically established on Xcode 27.3 b2 (see doc/FORMAT-NOTES.md): a record
 //! is `"AA01" + u16le size` (size covers the header) followed by a body of
 //! 4-byte tagged fields `TAG<F>` where `<F>` encodes the payload kind:
 //!
