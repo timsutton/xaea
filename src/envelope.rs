@@ -401,7 +401,12 @@ impl<'a> Envelope<'a> {
             }
         }
 
-        Ok(MacReport { root_mac_ok, cluster_macs_ok, chmac_variant, segmac_failed })
+        Ok(MacReport {
+            root_mac_ok,
+            cluster_macs_ok,
+            chmac_variant,
+            segmac_failed,
+        })
     }
 
     /// Verify per-segment checksums. Empirically (Xcode 27.3 b2) the checksum

@@ -1,4 +1,6 @@
+mod aa;
 mod envelope;
+mod extract;
 mod kdf;
 mod sigverify;
 
@@ -29,6 +31,16 @@ enum Commands {
         #[arg(long)]
         no_checksums: bool,
     },
+    /// Extract an AEA's payload to a directory
+    Extract {
+        file: PathBuf,
+        /// Output directory (created; must not be an existing non-empty dir)
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Machine-readable summary
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 const APPLE_ROOTS: &[u8] = include_bytes!("../assets/AppleRootCA.pem");
@@ -42,6 +54,7 @@ fn main() -> Result<()> {
             verify,
             no_checksums,
         } => inspect(&file, json, verify, no_checksums),
+        Commands::Extract { file, out, json } => extract_cmd(&file, &out, json),
     }
 }
 
@@ -179,6 +192,42 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn extract_cmd(path: &std::path::Path, out: &std::path::Path, json: bool) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
+    let env = envelope::Envelope::parse(&file)?;
+    if out.exists() {
+        anyhow::ensure!(
+            out.read_dir()?.next().is_none(),
+            "output dir {} is not empty",
+            out.display()
+        );
+    }
+    let st = extract::extract(&env, out)?;
+    let secs = t0.elapsed().as_secs_f64();
+    let rate = st.bytes as f64 / secs / (1u64 << 20) as f64;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "out": out.display().to_string(),
+                "dirs": st.dirs, "files": st.files, "links": st.links,
+                "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,
+            })
+        );
+    } else {
+        println!(
+            "extracted {} dirs, {} files, {} links ({}) in {secs:.1}s ({rate:.0} MiB/s payload)",
+            st.dirs,
+            st.files,
+            st.links,
+            human(st.bytes)
+        );
     }
     Ok(())
 }
