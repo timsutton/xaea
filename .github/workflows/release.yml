@@ -1,0 +1,59 @@
+name: Release
+
+# Publishes a GitHub Release with prebuilt Linux binaries (x86_64 /
+# aarch64). macOS assets are deferred: they need a macOS runner, which
+# GitHub-hosted runners don't offer for private repos (see PR notes).
+#
+# To cut a release: bump `version` in Cargo.toml, commit, then
+# `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "Dry run — build every asset, publish nothing"
+        type: boolean
+        default: false
+
+# Don't cancel an in-flight release; don't run two at once either.
+concurrency:
+  group: release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build & publish
+    # The aarch64 asset is zig-cross-linked from this runner (the GoReleaser
+    # rust builder drives cargo-zigbuild), so no cross toolchain apt hacks.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # goreleaser creates the GitHub Release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history — GoReleaser generates the release notes from the
+          # commit log between tags.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install zig 0.17.1
+        run: |
+          curl --fail --location --silent --show-error \
+            --output zig.tar.xz https://ziglang.org/download/0.17.1/x86_64-linux-0.17.1.tar.xz
+          sudo tar -xJf zig.tar.xz -C /usr/local
+          sudo ln -s /usr/local/zig/x86_64-linux-0.17.1/zig /usr/local/bin/zig
+          zig version
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.2
+          args: ${{ inputs.snapshot && 'release --snapshot --clean' || 'release --clean' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

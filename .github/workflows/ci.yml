@@ -88,19 +88,6 @@ jobs:
           key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
       - run: cargo test --release --locked -- --ignored --nocapture fixture
 
-  release-build:
-    name: Release build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo build --release --locked
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: xaea-linux-x86_64
-          path: target/release/xaea
-
   # cargo audit deferred to a follow-up PR: decide policy for the two
   # verify-only-inapplicable timing advisories (rsa RUSTSEC-2023-0071,
   # crypto-bigint RUSTSEC-2026-0387) — see git history on this branch for
