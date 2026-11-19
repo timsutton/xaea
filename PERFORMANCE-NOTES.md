@@ -127,9 +127,13 @@ Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh`:
 
 | run | liblzma | libcompression |
 |---|---|---|
-| `--dry-run --no-verify -j 2` (per-core decode speed) | 31.0 s | 28.7 s (−8%) |
-| `--dry-run`, default jobs | 5.40–5.80 s, ~74 s CPU | 5.12–5.54 s, ~69 s CPU (−5%) |
-| full extract, verify on (8 runs) | 9.88 ± 0.54 s | 9.31 ± 0.30 s (−6%) |
+| **full extract, defaults, verify on (8 runs)** — the real-world number | 9.88 ± 0.54 s | 9.31 ± 0.30 s (−6%) |
+| `--dry-run`, default jobs (CPU floor) | 5.40–5.80 s, ~74 s CPU | 5.12–5.54 s, ~69 s CPU (−5%) |
+| `--dry-run --no-verify -j 2` — isolation microbenchmark, not a usage scenario | 31.0 s | 28.7 s (−8%) |
+
+The `-j 2` row exists only to isolate per-core decoder throughput: with
+two decoders and nothing else running, wall time is pure LZMA (CPU ≈
+2 × wall), free of writer/MAC-pass contention and clock-boost effects.
 
 Two implementation details matter:
 
