@@ -84,7 +84,12 @@ mod tests {
 
     #[test]
     fn kdf_chain_matches_python_reference() {
-        let mk = main_key(&unhex(IKM), &unhex(SALT), b"\x00\x00\x00\x00", &unhex(POINT));
+        let mk = main_key(
+            &unhex(IKM),
+            &unhex(SALT),
+            b"\x00\x00\x00\x00",
+            &unhex(POINT),
+        );
         assert_eq!(tohex(&mk), MAINKEY, "main key (info AEA_AMK||hdr48||point)");
         assert_eq!(tohex(&root_header_key(&mk)), ROOTKEY);
         let ck = cluster_key(&mk, 0);
