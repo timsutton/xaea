@@ -117,6 +117,41 @@ observable difference; non-default modes always still get the call.
 - **mmap for the archive**: ruled out for `Sync` reasons above; nobody
   has since shown pread being the bottleneck at these rates.
 
+## Alternate LZMA decoder: Apple's libcompression (`--decoder`)
+
+`--decoder libcompression` decodes segments with the OS's
+`compression_decode_buffer(COMPRESSION_LZMA)` (LZMA2 in the same .xz
+container) instead of the vendored liblzma. Opt-in; liblzma stays the
+default because it is portable and its behaviour is pinned by our build.
+Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh`:
+
+| run | liblzma | libcompression |
+|---|---|---|
+| **full extract, defaults, verify on** — the real-world number, run A (5 runs) | 9.42 ± 0.33 s | 8.97 ± 0.46 s (−4.7%) |
+| same, run B (8 runs) | 9.88 ± 0.54 s | 9.31 ± 0.30 s (−5.8%) |
+| `--dry-run`, default jobs (CPU floor) | 5.40–5.80 s, ~74 s CPU | 5.12–5.54 s, ~69 s CPU (−5%) |
+| `--dry-run --no-verify -j 2` — isolation microbenchmark, not a usage scenario | 31.0 s | 28.7 s (−8%) |
+
+The `-j 2` row exists only to isolate per-core decoder throughput: with
+two decoders and nothing else running, wall time is pure LZMA (CPU ≈
+2 × wall), free of writer/MAC-pass contention and clock-boost effects.
+
+Read the full-extract result as "roughly 5%": the gap (0.4–0.6 s) is
+about the size of run-to-run σ, and absolute times drifted ~0.5 s
+between sessions. More runs (`scripts/bench.sh -r 20`) would tighten it.
+
+Two implementation details matter:
+
+- **Exact-size output buffer.** A first cut reserved `orig + 1` bytes to
+  detect over-long streams (`compression_decode_buffer` truncates
+  silently). The capacity ≠ length mismatch made `into_boxed_slice`
+  realloc+copy each 16 MiB segment and peak RSS went 0.2 → 1.1 GiB at
+  `-j 2`. With an exact buffer it matches liblzma. Over-long or
+  corrupt streams are still caught by the per-segment SHA-256 when
+  verifying (the default); with `--no-verify` only the size is checked.
+- **Per-thread scratch buffer** (`compression_decode_scratch_buffer_size`)
+  instead of letting libcompression allocate one per call.
+
 ## What verification costs (and how it hides)
 
 Verify-by-default (batch `0820ee1`) initially regressed 8.4 s → 13.0 s.
@@ -156,6 +191,16 @@ UNAEA_STATS=1 ./target/release/unaea extract fixtures/Xcode_27.3_beta_2.aea -o /
 # prints: parse+dispatch time, writer drain time — the two numbers that
 # tell you which side of the pipeline is the bottleneck.
 ./scripts/verify.sh <new-tree> <oracle-tree>   # correctness gate, always
+```
+
+For A/B timing use `scripts/bench.sh`: hyperfine over a real
+`extract` (wiping the output dir before each run), any number of named
+variants, plus machine/rev header and a mean/σ/min/CPU/peak-RSS/MiB/s
+table. `-d` for dry-run, `-r`/`-w` for runs/warmups, `-h` for the rest:
+
+```sh
+scripts/bench.sh 'liblzma=--decoder liblzma' 'libcompression=--decoder libcompression'
+scripts/bench.sh -d -r 10 'w4=-w 4' 'w6=-w 6'
 ```
 
 Warm the cache first (extract once to /dev/null-ish, or just discard the
