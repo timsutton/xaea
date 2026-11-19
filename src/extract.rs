@@ -8,18 +8,35 @@
 //! CPU + dispatch (instrumentation showed parser-issued syscalls were the
 //! wall-clock bottleneck, not write throughput). Ordering rules:
 //!
-//! * files/links pick a writer by round-robin sequence — their Open/Mklnk
-//!   and all blob slices share that one FIFO channel;
-//! * directories hash-route by path, and file/link parents are additionally
+//! * files pick a writer by round-robin sequence — their Open and all blob
+//!   slices share that one FIFO channel;
+//! * directories hash-route by path, and file parents are additionally
 //!   created on demand (`create_dir_all`, stat-fast when present), so no
 //!   cross-channel ordering assumption is ever made;
 //! * blob pieces are zero-copy Arc<[u8]> views of decoded segment buffers,
-//!   `pwrite`d at explicit offsets.
+//!   `pwrite`d at explicit offsets;
+//! * **symlinks and non-default directory modes run as a final pass** on
+//!   one writer after the stream ends (bsdtar/unxip policy): while records
+//!   stream, no archive-created symlink exists yet, so no file write can be
+//!   redirected through one; within the final pass, a symlink whose path
+//!   traverses an earlier archive symlink is refused (classic tar link
+//!   attack, review #1), and directory modes are applied last so a hostile
+//!   0555 dir cannot block its own subtree (review #8).
 //!
-//! Memory is bounded by the two channel capacities: at most
-//! (seg_queue + D) decoded buffers plus the pieces still queued by writers
-//! (pieces share buffers with in-flight decoded segments) — a few hundred
-//! MiB worst case.
+//! With `--verify` (the default) extraction refuses archives whose root/
+//! cluster/segment MACs, content signature, certificate chain policy, or
+//! per-segment SHA-256 checksums fail; checksums are checked inline in the
+//! decoder threads (SHA-256 is cheap next to LZMA) so no segment reaches a
+//! writer before its own check, and the full-file segment-MAC pass runs
+//! concurrently with the pipeline, joined before the final pass.
+//! `--no-verify` skips all of it.
+//!
+//! Memory: decoded buffers are bounded by the decoder channel (≈2× the
+//! decoder count in flight); writer queues add at most writers × queue(32)
+//! × segment_size — on a 15-decoder/6-writer machine with 16 MiB segments
+//! that is a ~3 GiB pinned *worst* case (every queue full of whole-segment
+//! slices simultaneously), far less in practice since most files hold only
+//! a slice or two and writers drain continuously.
 //!
 //! Status: on BSDs/macOS the tool answers `SIGINFO` (Ctrl-T) by printing a
 //! one-line progress report, like `dd` and friends; on Linux, which has no
@@ -56,6 +73,9 @@ pub struct Opts {
     pub prealloc: bool,
     /// Tag created objects with com.apple.quarantine (macOS only).
     pub quarantine: bool,
+    /// Enforce MACs, signature/chain policy and per-segment checksums
+    /// (default on; `--no-verify` clears).
+    pub verify: bool,
 }
 
 /// Effective create defaults under the current umask; matching modes skip a
@@ -222,11 +242,6 @@ pub fn end_status_line() {
 enum Work {
     Mkdir {
         path: Box<Path>,
-        mode: u32,
-    },
-    Mklnk {
-        path: Box<Path>,
-        target: Box<str>,
     },
     Open {
         seq: u64,
@@ -239,13 +254,67 @@ enum Work {
         piece: Piece,
         prealloc: u64,
     },
+    /// Drain barrier: acknowledge once everything queued before it has
+    /// been executed (per-writer channels are FIFO).
+    Flush(std::sync::mpsc::SyncSender<()>),
+    /// Final pass, in stream order, single writer (see module docs).
+    LinkPass(Vec<(Box<Path>, Box<str>)>),
+    /// Final pass: directory modes, applied after every object exists.
+    DirModes(Vec<(Box<Path>, u32)>),
+}
+
+/// Final-pass symlink creation with the tar-attack guard: a symlink whose
+/// path traverses a symlink created earlier in the same pass is refused —
+/// during the stream phase no archive symlink exists at all, so this closes
+/// the "link `x -> ..` then write `x/PWNED`" class entirely. Comparison is
+/// case-insensitive to match case-insensitive volumes.
+fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)], quarantine: bool) -> Result<()> {
+    let mut created: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let lower = |p: &Path| p.as_os_str().to_string_lossy().into_owned().into_bytes();
+    for (path, target) in links {
+        // Strict ancestors of `path`, at component boundaries.
+        let mut acc: Vec<u8> = Vec::new();
+        for comp in path.components() {
+            let name = comp.as_os_str().to_string_lossy();
+            if created.contains(&acc) && !acc.is_empty() {
+                bail!(
+                    "refusing symlink {}: traverses archive-created symlink {}",
+                    path.display(),
+                    String::from_utf8_lossy(&acc)
+                );
+            }
+            if !acc.is_empty() {
+                acc.push(b'/');
+            }
+            acc.extend_from_slice(name.to_lowercase().as_bytes());
+        }
+        let full = root.join(&**path);
+        if let Some(p) = full.parent() {
+            std::fs::create_dir_all(p).with_context(|| format!("mkdir -p {}", p.display()))?;
+        }
+        match std::fs::remove_file(&full) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // EISDIR etc.: a real directory (or file) we cannot replace lives
+            // here — in a well-formed archive this cannot happen; bail loudly
+            // rather than silently keep the occupant (a planted `x/` dir
+            // against a link record is itself suspicious).
+            Err(e) => Err(e).with_context(|| format!("replace {} with symlink", full.display()))?,
+        }
+        symlink(target.as_ref(), &full)
+            .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
+        if quarantine {
+            let _ = set_quarantine(&full);
+        }
+        created.insert(lower(path));
+    }
+    Ok(())
 }
 
 fn writer_loop(
     rx: Receiver<Work>,
     root: PathBuf,
     file_default: u32,
-    dir_default: u32,
     quarantine: bool,
 ) -> Result<()> {
     // Open file being written; closed implicitly when the next Open (or the
@@ -253,32 +322,24 @@ fn writer_loop(
     let mut cur: Option<(u64, File)> = None;
     while let Ok(w) = rx.recv() {
         match w {
-            Work::Mkdir { path, mode } => {
+            Work::Mkdir { path } => {
                 let full = root.join(path);
                 std::fs::create_dir_all(&full)
                     .with_context(|| format!("mkdir {}", full.display()))?;
-                if mode != dir_default {
-                    std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("chmod {}", full.display()))?;
-                }
                 if quarantine {
                     let _ = set_quarantine(&full);
                 }
             }
-            Work::Mklnk { path, target } => {
-                let full = root.join(path);
-                if let Some(p) = full.parent() {
-                    std::fs::create_dir_all(p)?;
-                }
-                match std::fs::remove_file(&full) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => Err(e).with_context(|| format!("replace {}", full.display()))?,
-                }
-                symlink(target.as_ref(), &full)
-                    .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
-                if quarantine {
-                    let _ = set_quarantine(&full);
+            Work::Flush(ack) => {
+                cur = None; // close the open fd before acknowledging
+                let _ = ack.send(());
+            }
+            Work::LinkPass(links) => link_pass(&root, &links, quarantine)?,
+            Work::DirModes(modes) => {
+                for (path, mode) in modes {
+                    let full = root.join(path);
+                    std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
+                        .with_context(|| format!("chmod {}", full.display()))?;
                 }
             }
             Work::Open { seq, path, mode } => {
@@ -354,6 +415,9 @@ struct DispatchSink {
     /// Files + links share this round-robin counter for writer selection.
     obj_seq: u64,
     prealloc: bool,
+    /// Held back for the final pass (see module docs).
+    links: Vec<(Box<Path>, Box<str>)>,
+    dir_modes: Vec<(Box<Path>, u32)>,
 }
 
 /// FNV-1a over the path so all messages *about one directory* (its own
@@ -395,12 +459,15 @@ impl Sink for DispatchSink {
         let rel = sanitize(&rec.path)
             .with_context(|| format!("record path {:?}", String::from_utf8_lossy(&rec.path)))?
             .into_boxed_path();
-        let mode = rec.mode & 0o7777;
+        // Strip setuid/setgid/sticky: an unprivileged extraction must never
+        // plant privilege bits (review #9; Apple's own tree needs none).
+        let mode = rec.mode & 0o0777;
         let nw = self.txs.len();
         match rec.typ {
             b'D' => {
                 if !self.dry {
-                    self.send(route_hash(&rec.path, nw), Work::Mkdir { path: rel, mode })?;
+                    self.send(route_hash(&rec.path, nw), Work::Mkdir { path: rel.clone() })?;
+                    self.dir_modes.push((rel, mode));
                 }
                 self.st.dirs += 1;
             }
@@ -412,14 +479,7 @@ impl Sink for DispatchSink {
                     .context("link record without LNK")??;
                 self.obj_seq += 1;
                 if !self.dry {
-                    let w = self.obj_seq as usize % nw;
-                    self.send(
-                        w,
-                        Work::Mklnk {
-                            path: rel,
-                            target: target.into_boxed_str(),
-                        },
-                    )?;
+                    self.links.push((rel, target.into_boxed_str()));
                 }
                 self.st.links += 1;
             }
@@ -531,24 +591,42 @@ fn read_pread(f: &File, off: u64, len: usize) -> Result<Vec<u8>> {
     Ok(v)
 }
 
-/// Decode one segment (pread stored bytes; LZMA-decode to `orig`).
-fn decode_segment(fh: &File, data_off: u64, comp: u32, orig: u32) -> Result<Arc<[u8]>> {
-    if comp == orig {
-        return Ok(Arc::from(
-            read_pread(fh, data_off, comp as usize)?.into_boxed_slice(),
-        ));
+/// Decode one segment (pread stored bytes; LZMA-decode to `orig`) and, when
+/// `expect` is Some, check the SHA-256 of the *decoded* bytes (the AEA
+/// checksum covers decompressed data — erratum 3). SHA-256 runs while the
+/// other decoders are busy; it is cheap next to LZMA.
+fn decode_segment(
+    fh: &File,
+    data_off: u64,
+    comp: u32,
+    orig: u32,
+    expect: Option<[u8; 32]>,
+    index: usize,
+) -> Result<Arc<[u8]>> {
+    let buf: Arc<[u8]> = if comp == orig {
+        Arc::from(read_pread(fh, data_off, comp as usize)?.into_boxed_slice())
+    } else {
+        let raw = read_pread(fh, data_off, comp as usize)?;
+        let mut out: Vec<u8> = Vec::with_capacity(orig as usize);
+        xz2::read::XzDecoder::new(&raw[..])
+            .read_to_end(&mut out)
+            .context("xz decode")?;
+        ensure!(
+            out.len() as u32 == orig,
+            "xz decoded size mismatch ({} vs {orig})",
+            out.len()
+        );
+        Arc::from(out.into_boxed_slice())
+    };
+    if let Some(want) = expect {
+        use sha2::{Digest, Sha256};
+        let got: [u8; 32] = Sha256::digest(&buf[..]).into();
+        ensure!(
+            got == want,
+            "checksum mismatch for segment {index} (corrupt or tampered archive)"
+        );
     }
-    let raw = read_pread(fh, data_off, comp as usize)?;
-    let mut out: Vec<u8> = Vec::with_capacity(orig as usize);
-    xz2::read::XzDecoder::new(&raw[..])
-        .read_to_end(&mut out)
-        .context("xz decode")?;
-    ensure!(
-        out.len() as u32 == orig,
-        "xz decoded size mismatch ({} vs {orig})",
-        out.len()
-    );
-    Ok(Arc::from(out.into_boxed_slice()))
+    Ok(buf)
 }
 
 /// Decoder-side view of a segment (owned/Copy so threads can own it).
@@ -557,12 +635,91 @@ struct SegInfo {
     off: u64,
     comp: u32,
     orig: u32,
+    cksum: Option<[u8; 32]>,
+}
+
+/// Enforce every structural guarantee that does not need a full file pass,
+/// before touching the filesystem (review #2): signature + chain policy,
+/// then the root/cluster header MACs — microseconds next to decoding.
+/// Returns the main key so the caller can run the expensive segment-MAC
+/// pass concurrently with the pipeline (joined before the final pass).
+fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
+    let chain = env
+        .auth
+        .iter()
+        .find(|(k, _)| k.ends_with(".signature.certificate-chain"))
+        .map(|(_, v)| v.clone())
+        .context("no certificate-chain auth pair")?;
+    let auth = crate::sigverify::verify_all(
+        &chain,
+        crate::sigverify::APPLE_ROOTS,
+        &env.file[env.sig_off..env.sig_off + crate::envelope::SIGNATURE_LEN],
+        &env.signed_prefix(),
+    )
+    .context("signature/chain verification")?;
+    ensure!(auth.content_sig_ok, "content signature does not verify");
+    ensure!(auth.sig_padded_ok, "signature field has non-zero padding");
+    ensure!(auth.chain_all_ok, "certificate chain link failed to verify");
+    ensure!(auth.ca_ok, "chain contains an issuer without CA:true");
+    ensure!(
+        auth.valid_now,
+        "chain contains an out-of-validity certificate"
+    );
+    if !auth.trusted_root {
+        eprintln!(
+            "warning: signer does not chain to the vendored Apple root — content \
+             integrity is verified, but Apple distribution trust is NOT established"
+        );
+    }
+    let main = env.main_key(auth.certs[0].point());
+    let (root_mac_ok, cluster_macs_ok, _) =
+        env.verify_header_macs(&main).context("MAC verification")?;
+    ensure!(root_mac_ok, "root header MAC mismatch");
+    ensure!(cluster_macs_ok, "cluster header MAC mismatch");
+    Ok(main)
 }
 
 pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
+    // Cheap upfront checks (signature, chain policy, header MACs); the one
+    // full-file check — segment MACs over the compressed bytes — then runs
+    // concurrently with the pipeline instead of serializing ~1.5 s of HMAC
+    // in front of it, and is joined before the final pass. Per-segment
+    // checksums still gate every write inline in the decoder threads.
+    let main = if opts.verify {
+        anyhow::ensure!(
+            env.root.checksum == 2,
+            "extract verification enforces SHA-256 segment checksums; this archive \
+             declares {} — use --no-verify to extract anyway",
+            crate::envelope::checksum_name(env.root.checksum)
+        );
+        Some(verify_upfront(env)?)
+    } else {
+        None
+    };
+    std::thread::scope(|scope| {
+        let segmac = main.map(|k| {
+            // Few threads on purpose: this path should hide underneath the
+            // decode pipeline, not compete with it for cores.
+            let n = std::thread::available_parallelism()
+                .map(|n| n.get().min(4))
+                .unwrap_or(2)
+                .max(1);
+            scope.spawn(move || env.verify_segment_macs_with(&k, n))
+        });
+        extract_body(env, src, opts, segmac)
+    })
+}
+
+fn extract_body(
+    env: &Envelope,
+    src: &Path,
+    opts: &Opts,
+    segmac: Option<std::thread::ScopedJoinHandle<'_, Vec<u32>>>,
+) -> Result<Stats> {
     if !opts.dry {
         std::fs::create_dir_all(&opts.out)?;
     }
+    let ck = opts.verify.then_some(());
     let segs: Arc<Vec<SegInfo>> = Arc::new(
         env.segments()
             .iter()
@@ -570,6 +727,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
                 off: s.data_off as u64,
                 comp: s.comp,
                 orig: s.orig,
+                cksum: ck.and_then(|()| <[u8; 32]>::try_from(s.cksum).ok()),
             })
             .collect(),
     );
@@ -587,7 +745,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
         .into_iter()
         .map(|rx| {
             let (root, q) = (opts.out.clone(), opts.quarantine);
-            thread::spawn(move || writer_loop(rx, root, file_default, dir_default, q))
+            thread::spawn(move || writer_loop(rx, root, file_default, q))
         })
         .collect();
 
@@ -605,7 +763,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
                 break;
             }
             let sg = &segs[i];
-            let r = decode_segment(&fh, sg.off, sg.comp, sg.orig)
+            let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i)
                 .map(|b| (i, b))
                 .with_context(|| format!("decode segment {i}"));
             if dtx.send(r).is_err() {
@@ -628,6 +786,8 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
         prog: prog.clone(),
         obj_seq: 0,
         prealloc: opts.prealloc,
+        links: Vec::new(),
+        dir_modes: Vec::new(),
     };
     let mut stream = Stream::new(&mut sink);
 
@@ -653,6 +813,40 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     drop(stream);
     let parser_done = prog.started.elapsed().as_secs_f64();
     sink.close_cur()?;
+    // Join the concurrent segment-MAC pass: by now every blob byte on disk
+    // has also passed its inline checksum, but nothing symlink- or
+    // chmod-shaped should land in the tree of an archive whose compressed
+    // bytes fail their MACs.
+    let segmac_failed = match segmac {
+        Some(h) => h
+            .join()
+            .map_err(|_| anyhow::anyhow!("segment MAC thread panicked"))?,
+        None => Vec::new(),
+    };
+    ensure!(
+        segmac_failed.is_empty(),
+        "segment MAC failures: {segmac_failed:?}"
+    );
+    // Final pass, on one writer, strictly after every stream-phase write
+    // has executed: a per-writer Flush barrier first (writer 0's queue
+    // alone proves nothing about the others), then symlinks (before any
+    // restrictive dir modes), then deferred directory modes.
+    if !opts.dry {
+        for w in 0..sink.txs.len() {
+            let (atx, arx) = sync_channel::<()>(1);
+            sink.send(w, Work::Flush(atx))?;
+            arx.recv()
+                .map_err(|_| anyhow::anyhow!("writer {w} died mid-flush"))?;
+        }
+        let links = std::mem::take(&mut sink.links);
+        sink.send(0, Work::LinkPass(links))?;
+        let modes: Vec<(Box<Path>, u32)> = sink
+            .dir_modes
+            .drain(..)
+            .filter(|(_, m)| *m != dir_default)
+            .collect();
+        sink.send(0, Work::DirModes(modes))?;
+    }
     let st = Stats {
         dirs: sink.st.dirs,
         files: sink.st.files,

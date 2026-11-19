@@ -54,6 +54,7 @@ fn synthetic(tag: &str) -> Option<(PathBuf, Value)> {
         .arg(&dir)
         .arg("--seed")
         .arg("1")
+        .arg("--evil")
         .output()
         .expect("run builder");
     assert!(
@@ -266,9 +267,10 @@ fn flip_byte(path: &Path, off: usize) {
     fs::write(path, &b).unwrap();
 }
 
-/// Run `inspect --verify` and return the JSON report, or `None` when the
-/// tool hard-failed — a corrupt structure it refuses to parse is itself a
-/// detection, so every caller asserts on the outcome either way.
+/// Run `inspect --verify` and return the JSON report if stdout carries one.
+/// Since the fail-nonzero change, a failing check still prints the full
+/// report and exits 1; only unparseable structure yields `None` — which is
+/// itself a detection, so every caller asserts on the outcome either way.
 fn verify_report(path: &Path, extra: &[&str]) -> Option<Value> {
     let out = unaea()
         .arg("inspect")
@@ -278,9 +280,6 @@ fn verify_report(path: &Path, extra: &[&str]) -> Option<Value> {
         .arg("--json")
         .output()
         .unwrap();
-    if !out.status.success() {
-        return None;
-    }
     serde_json::from_slice(&out.stdout).ok()
 }
 
@@ -310,11 +309,42 @@ fn tampering_is_detected() {
     }
 
     // 2) Root MAC field corrupted -> reported false (the MAC is compared,
-    //    not parsed, so the tool must stay reportable).
+    //    not parsed). Since review #3, failing checks must also exit
+    //    non-zero for CI use.
     fs::copy(&aea, &c1).unwrap();
     flip_byte(&c1, rootmac_off + 5);
     let v = verify_report(&c1, &["--no-checksums"]).expect("root MAC flip still reportable");
     assert_eq!(check(&v, "root_mac_ok"), false, "root MAC flip detected");
+    let st = unaea()
+        .arg("inspect")
+        .arg(&c1)
+        .arg("--verify")
+        .arg("--no-checksums")
+        .output()
+        .unwrap();
+    assert!(!st.status.success(), "failing checks exit non-zero");
+    // extract refuses the same archive; --no-verify is the override hatch.
+    let refused = unaea()
+        .arg("extract")
+        .arg(&c1)
+        .arg("-o")
+        .arg(dir.join("refused"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "extract verifies by default");
+    let forced = unaea()
+        .arg("extract")
+        .arg(&c1)
+        .arg("-o")
+        .arg(dir.join("forced"))
+        .arg("--no-verify")
+        .output()
+        .unwrap();
+    assert!(
+        forced.status.success(),
+        "--no-verify extracts anyway: {}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
 
     // 3) Last segment's payload byte flipped -> segment MAC and/or
     //    checksum must fail; a decode refusal counts too.
@@ -364,6 +394,39 @@ fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
         .output()
         .unwrap();
     assert!(ok.status.success(), "dry-run is safe over existing dirs");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn evil_symlink_archives_are_refused_and_contained() {
+    let Some((dir, _)) = synthetic("evil") else {
+        return;
+    };
+    for name in ["evil1.aea", "evil2.aea"] {
+        let out = dir.join(format!("out-{name}"));
+        let run = unaea()
+            .arg("extract")
+            .arg(dir.join(name))
+            .arg("-o")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            !run.status.success(),
+            "{name}: planted symlink chain must fail extraction: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    // Nothing escaped into the directory containing the output trees:
+    // evil1's target would have put PWNED beside `out-*`, evil2's a link
+    // named `tmp`.
+    assert!(!dir.join("PWNED").exists(), "tar link attack contained");
+    assert!(!dir.join("tmp").exists(), "symlink-through-symlink refused");
+    // The evil1 payload landed *inside* the tree as an ordinary file.
+    assert!(
+        dir.join("out-evil1.aea/app/up/PWNED").exists(),
+        "write stayed inside the output root"
+    );
     fs::remove_dir_all(&dir).ok();
 }
 

@@ -111,9 +111,10 @@ def build_tree(rng_state: bytes) -> tuple[list[dict], list[dict]]:
         recs.append(obj("D", path, S_IFDIR | mode))
         expect.append({"path": clamp(path), "t": "D", "mode": mode})
 
-    def F(path, content, mode=0o644):
+    def F(path, content, mode=0o644, expect_mode=None):
         recs.append(obj("F", path, S_IFREG | mode, content))
-        expect.append({"path": clamp(path), "t": "F", "mode": mode,
+        expect.append({"path": clamp(path), "t": "F",
+                       "mode": mode if expect_mode is None else expect_mode,
                        "sha256": hashlib.sha256(content).hexdigest(),
                        "size": len(content)})
 
@@ -128,6 +129,9 @@ def build_tree(rng_state: bytes) -> tuple[list[dict], list[dict]]:
     F("T/exec.sh", b"#!/bin/sh\necho hi\n", 0o755)
     F("T/sub dir/ünïcode/f.bin", prand(rng_state + b"uni", 5000))
     F("T/empty.bin", b"", 0o600)
+    # setuid bit present in the record; extraction must strip it (the
+    # manifest records the expected ON-DISK mode).
+    F("T/setuid.bin", b"setuid-me\n", 0o4755, expect_mode=0o755)
     # Blob that spans multiple segments (and thus a cluster boundary).
     F("T/big.bin", prand(rng_state + b"big", SEG * 3 + 17))
     L("T/link-rel", "sub dir/ünïcode/f.bin")
@@ -169,9 +173,8 @@ def align_boundary_file(recs: list[dict], rng_state: bytes) -> None:
                     prand(rng_state + b"al", dat)))
 
 
-def build(outdir: Path, seed: int) -> None:
-    rng_state = hashlib.sha256(f"unaea-test-{seed}".encode()).digest()
-    # Deterministic signing key (stable vectors for Rust unit tests).
+def make_signer(rng_state: bytes):
+    """Deterministic signing key + self-signed leaf (stable across runs)."""
     order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
     d = int.from_bytes(prand(rng_state + b"ecdsa", 40), "big") % (order - 1) + 1
     key = ec.derive_private_key(d, ec.SECP256R1())
@@ -190,16 +193,12 @@ def build(outdir: Path, seed: int) -> None:
     point = key.public_key().public_bytes(
         serialization.Encoding.X962,
         serialization.PublicFormat.UncompressedPoint)  # 65 B
+    return key, cert_pem, point
 
-    # --- payload stream ------------------------------------------------
-    recs, expect = build_tree(rng_state)
-    align_boundary_file(recs, rng_state)
-    # Rebuild expectations for the appended align.bin.
-    expect.append({"path": "T/align.bin", "t": "F", "mode": 0o644,
-                   "sha256": hashlib.sha256(
-                       recs[-1]["content"]).hexdigest(),
-                   "size": len(recs[-1]["content"])})
-    stream = pack_stream(recs)
+
+def assemble(stream: bytes, rng_state: bytes, key, cert_pem, point,
+             out_path: Path) -> dict:
+    """Segment, key, MAC-chain, sign and write a signed profile-0 AEA."""
     original_size = len(stream)
 
     # --- segmentation ---------------------------------------------------
@@ -280,13 +279,33 @@ def build(outdir: Path, seed: int) -> None:
     der = key.sign(prefix, ec.ECDSA(hashes.SHA256()))  # cryptography >= 49: (data, alg)
     file[sig_off:sig_off + len(der)] = der
 
-    outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "archive.aea").write_bytes(bytes(file))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(bytes(file))
+    return {"total": total, "nsegs": nsegs, "original_size": original_size,
+            "ikm": ikm, "mainsalt": mainsalt, "mainkey": mainkey,
+            "rootkey": rootkey}
+
+
+def build(outdir: Path, seed: int) -> None:
+    rng_state = hashlib.sha256(f"unaea-test-{seed}".encode()).digest()
+    key, cert_pem, point = make_signer(rng_state)
+
+    recs, expect = build_tree(rng_state)
+    align_boundary_file(recs, rng_state)
+    # Rebuild expectations for the appended align.bin.
+    expect.append({"path": "T/align.bin", "t": "F", "mode": 0o644,
+                   "sha256": hashlib.sha256(
+                       recs[-1]["content"]).hexdigest(),
+                   "size": len(recs[-1]["content"])})
+    info = assemble(pack_stream(recs), rng_state, key, cert_pem, point,
+                    outdir / "archive.aea")
 
     by_path = {clamp(r["path"]): r["content"] for r in recs if r["t"] == "F"}
     for e in expect:
         if e["t"] == "F":
             e["hex"] = by_path[e["path"]].hex()
+    mainkey, ikm, mainsalt, rootkey = (
+        info["mainkey"], info["ikm"], info["mainsalt"], info["rootkey"])
     manifest = {
         # entries expected on disk (includes implicit dirs) vs record counts
         # (what the extractor's stats must report).
@@ -297,8 +316,8 @@ def build(outdir: Path, seed: int) -> None:
                   "files": sum(1 for r in recs if r["t"] == "F"),
                   "links": sum(1 for r in recs if r["t"] == "L")},
         "entries": expect,
-        "original_size": original_size,
-        "segments": nsegs,
+        "original_size": info["original_size"],
+        "segments": info["nsegs"],
         # KDF vectors for src/kdf.rs unit tests.
         "vectors": {
             "ikm": ikm.hex(), "mainsalt": mainsalt.hex(),
@@ -313,13 +332,37 @@ def build(outdir: Path, seed: int) -> None:
         },
     }
     (outdir / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    print(f"archive.aea: {total} bytes, {nsegs} segments, "
-          f"{original_size} payload bytes, {len(expect)} manifest entries")
+    print(f"archive.aea: {info['total']} bytes, {info['nsegs']} segments, "
+          f"{info['original_size']} payload bytes, {len(expect)} manifest entries")
+
+
+def build_evil(outdir: Path, seed: int) -> None:
+    """Two adversarial archives; a safe extractor must fail both, and any
+    partial writes must stay inside the output tree."""
+    rng_state = hashlib.sha256(f"unaea-test-{seed}-evil".encode()).digest()
+    key, cert_pem, point = make_signer(rng_state)
+    # evil1: tar-style link attack — symlink `app/up -> ..` plus a file
+    # record whose path passes through it. Naive extractors write
+    # PWNED next to (outside) the output tree.
+    recs1 = [obj("D", "app", S_IFDIR | 0o755),
+             obj("L", "app/up", S_IFLNK | 0o777, None, ".."),
+             obj("F", "app/up/PWNED", S_IFREG | 0o644, b"esc\n")]
+    assemble(pack_stream(recs1), rng_state, key, cert_pem, point,
+             outdir / "evil1.aea")
+    # evil2: a symlink record whose path traverses an earlier symlink.
+    recs2 = [obj("L", "l1", S_IFLNK | 0o777, None, ".."),
+             obj("L", "l1/l2", S_IFLNK | 0x1ff, None, "tmp")]
+    assemble(pack_stream(recs2), rng_state, key, cert_pem, point,
+             outdir / "evil2.aea")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir", type=Path)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--evil", action="store_true",
+                    help="also build evil1.aea / evil2.aea link-attack archives")
     a = ap.parse_args()
     build(a.outdir, a.seed)
+    if a.evil:
+        build_evil(a.outdir, a.seed)
