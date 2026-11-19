@@ -17,6 +17,27 @@
 //! are *not* part of the record size.
 
 use anyhow::{bail, ensure, Result};
+use std::sync::Arc;
+
+/// A zero-copy slice of a decoded segment buffer.
+#[derive(Clone)]
+pub struct Piece {
+    pub buf: Arc<[u8]>,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Piece {
+    pub fn bytes(&self) -> &[u8] {
+        &self.buf[self.start..self.end]
+    }
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -33,8 +54,9 @@ pub trait Sink {
     /// A record was fully parsed. For files, `record.dat` bytes follow and
     /// will be delivered via [`Sink::blob`] (possibly in several pieces).
     fn record(&mut self, rec: &Record) -> Result<()>;
-    /// Streaming piece of the current file's data blob.
-    fn blob(&mut self, bytes: &[u8]) -> Result<()>;
+    /// Streaming piece of the current file's data blob (zero-copy view of a
+    /// decoded segment buffer).
+    fn blob(&mut self, piece: Piece) -> Result<()>;
 }
 
 /// Blanket: mutable references to sinks are sinks (lets Stream borrow).
@@ -42,8 +64,8 @@ impl<P: Sink + ?Sized> Sink for &mut P {
     fn record(&mut self, rec: &Record) -> Result<()> {
         (*self).record(rec)
     }
-    fn blob(&mut self, bytes: &[u8]) -> Result<()> {
-        (*self).blob(bytes)
+    fn blob(&mut self, piece: Piece) -> Result<()> {
+        (*self).blob(piece)
     }
 }
 
@@ -68,14 +90,15 @@ impl<P: Sink> Stream<P> {
         }
     }
 
-    pub fn feed(&mut self, mut data: &[u8]) -> Result<()> {
-        while !data.is_empty() {
+    pub fn feed(&mut self, chunk: Arc<[u8]>) -> Result<()> {
+        let mut p = 0usize;
+        while p < chunk.len() {
             match self.state {
                 State::Header => {
                     let need = 6 - self.buf.len();
-                    let take = need.min(data.len());
-                    self.buf.extend_from_slice(&data[..take]);
-                    data = &data[take..];
+                    let take = need.min(chunk.len() - p);
+                    self.buf.extend_from_slice(&chunk[p..p + take]);
+                    p += take;
                     if self.buf.len() == 6 {
                         ensure!(
                             &self.buf[..4] == b"AA01",
@@ -89,11 +112,12 @@ impl<P: Sink> Stream<P> {
                 }
                 State::Body(size) => {
                     let need = size as usize - 6 - self.buf.len();
-                    let take = need.min(data.len());
-                    self.buf.extend_from_slice(&data[..take]);
-                    data = &data[take..];
+                    let take = need.min(chunk.len() - p);
+                    self.buf.extend_from_slice(&chunk[p..p + take]);
+                    p += take;
                     if self.buf.len() == size as usize - 6 {
-                        let rec = parse_record(&self.buf)?;
+                        let body = std::mem::take(&mut self.buf);
+                        let rec = parse_record(&body)?;
                         self.buf.clear();
                         self.sink.record(&rec)?;
                         if rec.dat > 0 {
@@ -104,15 +128,11 @@ impl<P: Sink> Stream<P> {
                     }
                 }
                 State::Blob(rem) => {
-                    let take = (rem as usize).min(data.len());
-                    self.sink.blob(&data[..take])?;
-                    data = &data[take..];
+                    let take = (rem as usize).min(chunk.len() - p);
+                    self.sink.blob(Piece { buf: chunk.clone(), start: p, end: p + take })?;
+                    p += take;
                     let rem = rem - take as u64;
-                    self.state = if rem == 0 {
-                        State::Header
-                    } else {
-                        State::Blob(rem)
-                    };
+                    self.state = if rem == 0 { State::Header } else { State::Blob(rem) };
                 }
             }
         }

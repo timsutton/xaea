@@ -89,6 +89,9 @@ pub struct Segment<'a> {
     pub hdr: &'a [u8], // the full on-disk segment header record
     pub mac: &'a [u8],
     pub data: &'a [u8],
+    /// Absolute file offset of the segment's stored bytes (for pread-based
+    /// parallel decoding without sharing the mmap).
+    pub data_off: usize,
 }
 
 pub struct Envelope<'a> {
@@ -298,6 +301,7 @@ impl<'a> Envelope<'a> {
                     cksum: &file[ho + 8..ho + seg_hdr_len],
                     hdr: &file[ho..ho + seg_hdr_len],
                     mac: &file[c.seghmacs_off + (s as usize) * 32..][..32],
+                    data_off: doff,
                     data: &file[doff..doff + comp],
                 });
                 doff += comp;

@@ -940,6 +940,7 @@ dependencies = [
  "ecdsa",
  "hkdf",
  "hmac",
+ "libc",
  "memmap2",
  "p256",
  "p384",

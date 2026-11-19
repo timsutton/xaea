@@ -40,6 +40,15 @@ enum Commands {
         /// Machine-readable summary
         #[arg(long)]
         json: bool,
+        /// Parse and decode everything, but write no files
+        #[arg(long)]
+        dry_run: bool,
+        /// Decoder threads (default: cores-6, min 2)
+        #[arg(short, long)]
+        jobs: Option<usize>,
+        /// Writer threads (default: 4; APFS likes a small fixed count)
+        #[arg(short = 'w', long)]
+        writers: Option<usize>,
     },
 }
 
@@ -54,7 +63,14 @@ fn main() -> Result<()> {
             verify,
             no_checksums,
         } => inspect(&file, json, verify, no_checksums),
-        Commands::Extract { file, out, json } => extract_cmd(&file, &out, json),
+        Commands::Extract {
+            file,
+            out,
+            json,
+            dry_run,
+            jobs,
+            writers,
+        } => extract_cmd(&file, &out, json, dry_run, jobs, writers),
     }
 }
 
@@ -196,19 +212,33 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
     Ok(())
 }
 
-fn extract_cmd(path: &std::path::Path, out: &std::path::Path, json: bool) -> Result<()> {
+fn extract_cmd(
+    path: &std::path::Path,
+    out: &std::path::Path,
+    json: bool,
+    dry_run: bool,
+    jobs: Option<usize>,
+    writers: Option<usize>,
+) -> Result<()> {
     let t0 = std::time::Instant::now();
     let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
     let env = envelope::Envelope::parse(&file)?;
-    if out.exists() {
+    if !dry_run && out.exists() {
         anyhow::ensure!(
             out.read_dir()?.next().is_none(),
             "output dir {} is not empty",
             out.display()
         );
     }
-    let st = extract::extract(&env, out)?;
+    let cores = std::thread::available_parallelism()?.get();
+    let opts = extract::Opts {
+        out: out.to_path_buf(),
+        dry: dry_run,
+        decoders: jobs.unwrap_or_else(|| cores.saturating_sub(6).max(2)),
+        writers: writers.unwrap_or(4),
+    };
+    let st = extract::extract(&env, path, &opts)?;
     let secs = t0.elapsed().as_secs_f64();
     let rate = st.bytes as f64 / secs / (1u64 << 20) as f64;
     if json {
@@ -216,17 +246,22 @@ fn extract_cmd(path: &std::path::Path, out: &std::path::Path, json: bool) -> Res
             "{}",
             serde_json::json!({
                 "out": out.display().to_string(),
+                "dry_run": dry_run,
+                "decoders": opts.decoders, "writers": opts.writers,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,
             })
         );
     } else {
         println!(
-            "extracted {} dirs, {} files, {} links ({}) in {secs:.1}s ({rate:.0} MiB/s payload)",
+            "{} {} dirs, {} files, {} links ({}) in {secs:.1}s ({rate:.0} MiB/s payload, {} decoders, {} writers)",
+            if dry_run { "verified" } else { "extracted" },
             st.dirs,
             st.files,
             st.links,
-            human(st.bytes)
+            human(st.bytes),
+            opts.decoders,
+            opts.writers,
         );
     }
     Ok(())
