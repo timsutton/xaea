@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The real Xcode fixture isn't in the repo, so the tests that need it
+      # are #[ignore]d and stay skipped here. See README for running them
+      # locally with AEA_FIXTURE=… cargo test -- --ignored.
+      - run: cargo test --locked
+
+  fixture:
+    name: Real fixture
+    runs-on: ubuntu-latest
+    # The fixture URL lives in an Actions secret, which fork PRs (and
+    # Dependabot) can't read; skip the job there instead of failing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      AEA_FIXTURE: ${{ github.workspace }}/fixtures/Xcode_27.3_beta_2.aea
+      AEA_FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Keyed on the content hash, so the URL is only hit on a cache miss.
+      # Saved right after the hash check (not at job end) so a failing test
+      # doesn't throw away a good download.
+      - id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: fixtures/Xcode_27.3_beta_2.aea
+          key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
+      - name: Download fixture
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          AEA_FIXTURE_URL: ${{ secrets.AEA_FIXTURE_URL }}
+        run: |
+          mkdir -p fixtures
+          # --silent keeps the URL out of progress output; the secret is also
+          # masked in logs by Actions.
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$AEA_FIXTURE" "$AEA_FIXTURE_URL"
+      - name: Check fixture hash
+        run: echo "$AEA_FIXTURE_SHA256  $AEA_FIXTURE" | sha256sum --check
+      - name: Save fixture cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: fixtures/Xcode_27.3_beta_2.aea
+          key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
+      - run: cargo test --release --locked -- --ignored --nocapture fixture
+
+  release-build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unaea-linux-x86_64
+          path: target/release/unaea
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

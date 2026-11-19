@@ -1,0 +1,27 @@
+name: Perf
+
+# Stub — real performance measurement comes later, once the Xcode AEA
+# fixture download is available.
+#
+# TODO: fetch the same fixture the `fixture` job in ci.yml uses (secret
+# AEA_FIXTURE_URL), build the release binary, then benchmark on the Linux
+# runner and report wall time + MiB/s to the job summary and an artifact:
+#   - unaea inspect <fixture> --verify --json
+#   - unaea extract   <fixture> --dry-run --json   (UNAEA_STATS=1 for the
+#     pipeline breakdown; the --json summary carries seconds/mib_per_s)
+#   - optionally a full on-disk extraction, gated on runner free space
+
+on:
+  workflow_dispatch:
+
+jobs:
+  perf:
+    name: Measure extraction performance (stub)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub notice
+        run: |
+          echo "::notice::Perf workflow is a stub; the Xcode AEA benchmark isn't wired up yet (see TODO in .github/workflows/perf.yml)."
+          nproc
+          df -h "$RUNNER_TEMP"
