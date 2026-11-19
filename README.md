@@ -14,6 +14,22 @@ documented (including four errata in the public spec) in
 benchmarks — architecture rationale, tuning data, rejected experiments —
 is in [PERFORMANCE-NOTES.md](PERFORMANCE-NOTES.md).
 
+## Install
+
+Prebuilt Linux binaries are attached to every [GitHub
+release](https://github.com/timsutton/xaea/releases/latest) — x86_64
+and aarch64, each a `.tar.gz` with the LICENSE, README and CHANGELOG
+alongside the binary, plus a `checksums.txt` (macOS assets are coming):
+
+```sh
+# x86_64, as an example — swap the version and linux_amd64 → linux_arm64
+# as needed (assets need glibc ≥ 2.30: Ubuntu 20.04+, Debian 11+, RHEL 9+)
+curl -fsSL https://github.com/timsutton/xaea/releases/download/v0.1.0/xaea_0.1.0_linux_amd64.tar.gz | tar xz
+./xaea --help
+```
+
+Or build from source (Rust ≥ 1.87): `cargo install --path .`.
+
 ## Benchmarks
 
 Xcode 27.3 beta 2 archive (2.03 GiB compressed → 9.71 GiB payload,
@@ -145,6 +161,22 @@ capacity padding, cross-segment blobs, stored segments, clamped paths,
 symlinks, unicode) with `scripts/make_test_aea.py` and round-trips it
 through verify + extract; the fixture-gated tests re-check every documented
 fact in FORMAT-NOTES.md against the real Apple file.
+
+### Releasing
+
+Releases publish themselves from tags (GoReleaser, configured in
+`.goreleaser.yaml`, driven by `.github/workflows/release.yml`):
+
+1. Bump `version` in `Cargo.toml`, refresh `Cargo.lock` (one `cargo
+   check`), write the CHANGELOG entry — landed on `main`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+The Release workflow builds the Linux assets on one ubuntu runner —
+aarch64 is zig-cross-linked, both against glibc ≥ 2.30 — and publishes
+the GitHub Release with generated notes and `checksums.txt`. macOS assets
+are deferred until a macOS runner is available for the private repo.
+The workflow also accepts a manual `snapshot` dispatch that dry-runs the
+whole pipeline without publishing.
 
 ## Acknowledgments
 

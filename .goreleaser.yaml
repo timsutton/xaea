@@ -1,0 +1,30 @@
+# GoReleaser configuration — https://goreleaser.com
+#
+# Driven by .github/workflows/release.yml, which runs on every `v*` tag push:
+# bump the version in Cargo.toml, tag it, and the release publishes itself.
+
+version: 2
+
+builds:
+  - builder: rust
+    binary: xaea
+    flags:
+      - --release
+      - --locked
+    targets:
+      # Linux only for now — a darwin asset needs a macOS runner, which
+      # GitHub doesn't offer for private repos (see PR notes). The rust
+      # builder drives `cargo zigbuild` by default and runs `rustup target
+      # add` per target: x86_64 builds natively, aarch64 is cross-linked
+      # with zig, so both build on one ubuntu runner with a consistent
+      # glibc floor (2.30, measured).
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+
+archives:
+  - # Default name template (xaea_<version>_<os>_<arch>.tar.gz); ship the
+    # license and top-level docs alongside the binary.
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
