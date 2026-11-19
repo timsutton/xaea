@@ -26,6 +26,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Same pinned compiler as ci.yml, so benchmarks stay comparable across runs
+  # and across codegen changes from a Rust release. Renovate's github-actions
+  # manager keeps the action digests current but does not see this value;
+  # bump it by hand (or teach Renovate about it with a regex manager rule).
+  RUST_VERSION: 1.100.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,7 +51,9 @@ jobs:
       MAX_SECONDS: ${{ inputs.max_seconds || vars.PERF_MAX_SECONDS || '120' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
