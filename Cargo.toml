@@ -6,7 +6,7 @@ edition = "2021"
 # RUSTSEC-2023-0071 / RUSTSEC-2026-0387) both declare 1.87.
 rust-version = "1.87"
 description = "Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 anyhow = "1"
