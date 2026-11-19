@@ -43,8 +43,11 @@ enum Commands {
         /// Parse and decode everything, but write no files
         #[arg(long)]
         dry_run: bool,
-        /// Skip signature/chain/MAC/checksum verification (trusted input
-        /// only; verification is on by default)
+        /// Skip all integrity and authenticity checks (signature, cert chain,
+        /// MAC, checksums). Only for trusted or damaged archives: a tampered
+        /// or corrupt archive extracts silently. You can still validate the
+        /// extracted app afterwards with `codesign --verify --deep --strict`.
+        /// Verification is on by default.
         #[arg(long)]
         no_verify: bool,
         /// Decoder threads (default: cores-1, min 2)

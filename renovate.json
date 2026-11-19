@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitTypeAll(chore)"
+  ],
+  "enabledManagers": ["cargo", "github-actions"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "America/Toronto",
+  "prConcurrentLimit": 5,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"]
+  },
+  "packageRules": [
+    {
+      "description": "RustCrypto crates must move in lockstep (shared trait crates); update together",
+      "groupName": "RustCrypto",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "sha2", "hmac", "hkdf", "p256", "p384", "ecdsa", "signature", "rsa"
+      ]
+    },
+    {
+      "description": "Group all GitHub Actions bumps into one PR",
+      "groupName": "GitHub Actions",
+      "matchManagers": ["github-actions"]
+    },
+    {
+      "description": "Automerge patch and digest bumps once CI is green",
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}

@@ -3,7 +3,7 @@
 //! The AEA spec spells out a set of constants ("AEA_AMK" and friends), so we
 //! keep them here verbatim. See the spec for why.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8], len: usize) -> Vec<u8> {
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn mac_layout_is_salt_data_len() {
-        use hmac::Mac;
+        use hmac::{KeyInit, Mac};
         let k = [7u8; 32];
         let (d, s) = (b"hello".as_slice(), b"salt".as_slice());
         let mut manual: Vec<u8> = s.to_vec();
