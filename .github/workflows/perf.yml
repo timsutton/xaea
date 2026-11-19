@@ -50,7 +50,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: hyperfine
+          # Pinned: the --export-json schema changed in 2.0 (stats moved
+          # under results[].summary), and the parsers below depend on it.
+          tool: hyperfine@2.0.0
 
       # Same fixture handling as the `fixture` job in ci.yml: cache keyed on
       # the content hash, download from the secret URL only on a miss.
@@ -123,12 +125,13 @@ jobs:
           print("|---|---:|---:|---:|---:|")
           for path in sorted(glob.glob("perf/*.json")):
               for r in json.load(open(path))["results"]:
-                  mean = r["mean"]
-                  mibs = nbytes / 2**20 / mean
-                  print(f"| {r['command']} | {mean:.2f} s | {r['stddev']:.2f} | {r['min']:.2f} | {mibs:,.0f} |")
+                  t = r["summary"]["time_wall_clock"]
+                  mibs = nbytes / 2**20 / t["mean"]
+                  print(f"| {r['name']} | {t['mean']:.2f} s | {t['stddev'] or 0:.2f} | {t['min']:.2f} | {mibs:,.0f} |")
           PY
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: perf-results
           path: perf/*.json
@@ -139,8 +142,8 @@ jobs:
           python3 - <<'PY'
           import json, os, sys
           limit = float(os.environ["MAX_SECONDS"])
-          rs = {r["command"]: r for r in json.load(open("perf/readonly.json"))["results"]}
-          mean = rs["extract --dry-run"]["mean"]
+          rs = {r["name"]: r for r in json.load(open("perf/readonly.json"))["results"]}
+          mean = rs["extract --dry-run"]["summary"]["time_wall_clock"]["mean"]
           print(f"extract --dry-run mean {mean:.2f}s (limit {limit:g}s)")
           if mean > limit:
               print(f"::error title=Perf regression::extract --dry-run took {mean:.1f}s on average, over the {limit:g}s limit")
