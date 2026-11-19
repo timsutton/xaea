@@ -14,8 +14,10 @@ ignore it for this variant.
 0    "AEA1"
 4    profile: 3 bytes + byte[7] (scrypt strength; 0 here)
 8    u32 auth_data_size                     (counts what follows; = 3802)
-12   auth data: pairs of (u32 len, key, u32 len, value)
-     ^ erratum 1: each u32 length prefix INCLUDES its own 4 bytes
+12   auth data: repeated (u32 len, key NUL value)
+     ^ erratum 1: each u32 length prefix INCLUDES its own 4 bytes, and the
+     key and value share one entry as `key\0value` (the spec's "two length
+     prefixes" reading parses nothing real)
      here: key "com.apple.ias.signature.certificate-chain" -> 3-cert PEM
 12+auth_size
      128 B signature  (DER ECDSA P-256, null-padded to 128)
