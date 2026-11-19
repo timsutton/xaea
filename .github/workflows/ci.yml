@@ -104,6 +104,11 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # audit-check publishes findings as a check run; the default read-only
+    # token on `pull_request` events can't do that.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
