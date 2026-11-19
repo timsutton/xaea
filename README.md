@@ -20,9 +20,15 @@ run one at a time, warm cache:
 
 | tool | time |
 |---|---|
-| **unaea** | **~9 s** |
+| **unaea** (verification on, the default) | **10.6 s** |
+| **unaea** `--no-verify` | 9.0 s |
 | unxip (same-version `.xip`, for scale) | 24.8 s |
 | Apple `archiveutil extractXcodeAEA` | 40.0 s |
+
+So full MAC + signature + checksum verification costs ~1.6 s of the run —
+the expensive segment-MAC pass runs concurrently with the decode pipeline,
+and per-segment SHA-256s are checked inline on the decoder threads, so
+verification is on by default with no meaningful speed penalty.
 
 Design: LZMA decoder threads read segments with `pread` and decode them
 out of order; a reorder + parse thread runs the AA01 object-stream parser
@@ -50,19 +56,34 @@ Options on `extract`:
 
 | flag | meaning |
 |---|---|
-| `-j/--jobs` | decoder threads (default: cores−6) |
-| `-w/--writers` | writer threads (default: 4 — optimal on APFS/NVMe) |
-| `--dry-run` | decode + parse everything, write nothing (~7 s floor) |
+| `--no-verify` | skip signature/chain/MAC/checksum verification (trusted input only) |
+| `-j/--jobs` | decoder threads (default: cores−1, min 2) |
+| `-w/--writers` | writer threads (default: 6 — optimal on APFS/NVMe) |
+| `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
 | `--quarantine` | tag outputs with `com.apple.quarantine` (macOS only, off by default like other CLI extractors) |
 | `--json` | machine-readable summary |
 
 ## Verification & fidelity
 
-`inspect --verify` proves, against Apple's published spec (with our errata
-corrections): root/cluster/segment HMACs, SHA-256 checksums of every
-decompressed segment, the ECDSA content signature over the signed prefix,
-and the cert chain up to the vendored Apple Root CA - G3.
+`extract` **verifies by default** and refuses an archive unless every check
+passes; `inspect --verify` runs the same checks and prints an itemized
+report (non-zero exit if anything fails, so it is CI-usable):
+
+* root, cluster, and per-segment HMACs (the segment pass runs concurrently
+  with extraction and is joined before the final pass);
+* SHA-256 of every decompressed segment, checked inline on the decoder
+  threads — no segment's bytes reach the filesystem before its own check;
+* the ECDSA content signature over the signed prefix (SHA-1 suites are
+  rejected outright);
+* the certificate chain: every link verifies, every issuer has `CA:true`,
+  and every certificate is inside its validity window;
+* trust to the vendored Apple Root CA - G3 is reported (`trusted_root`)
+  but only *warns*: a self-signed or privately-signed archive still gets
+  full integrity verification — establish provenance yourself.
+
+`--no-verify` skips all of it; it exists for recovering damaged archives,
+not for speed.
 
 Extraction fidelity on the real fixture was proven by: 624/624 segment
 checksums, exhaustive record walk, 100 % path-set match with `unxip`'s
@@ -72,10 +93,17 @@ and parallel pipelines (`scripts/verify.sh <tree-a> <tree-b>`). The only
 content differences vs the `.xip` are ~2,000 Mach-O CMS signature blobs —
 Apple re-signed the build for the AEA distribution.
 
-Safety policy (unxip-style): absolute paths are rejected, `..` components
-clamp to the output root, symlink targets are stored verbatim (Apple's
-archives contain deliberate `../`-escape symlink records whose target never
-lands in the tree).
+Safety policy: absolute paths are rejected; `..` components clamp to the
+output root; link targets are stored verbatim (Apple's archives contain
+deliberate `../`-escape symlink records whose target never lands in the
+tree) except absolute targets, which are rejected. Symlinks and directory
+modes are created in a **final pass** after the whole stream has been
+written (bsdtar/unxip practice), so no write can be redirected through an
+archive-planted symlink; within that pass, a symlink whose path traverses
+an earlier archive symlink is refused (the classic tar link attack), and
+modes that would lock a directory against its own subtree are applied
+*after* the subtree exists. Setuid/setgid/sticky bits are stripped from
+every mode.
 
 Two small permission details:
 
@@ -111,3 +139,15 @@ capacity padding, cross-segment blobs, stored segments, clamped paths,
 symlinks, unicode) with `scripts/make_test_aea.py` and round-trips it
 through verify + extract; the fixture-gated tests re-check every documented
 fact in FORMAT-NOTES.md against the real Apple file.
+
+## Acknowledgments
+
+* [saagarjha/unxip](https://github.com/saagarjha/unxip) — the inspiration
+  for this tool. unxip proved that extracting Xcode distributions could be
+  several times faster than Apple's own tooling, and this project borrows
+  its spirit (and some benchmark rivalry): parallel LZMA decode, a
+  syscall-light pipeline, and APFS-friendly writes. The final-pass symlink
+  policy follows bsdtar/unxip practice.
+* [kinnay/AEA](https://github.com/kinnay/AEA) `FORMAT.md` — the starting
+  point for the envelope layout; the errata found against Apple's real
+  artifact are documented in FORMAT-NOTES.md.
