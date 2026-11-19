@@ -1,12 +1,12 @@
 #!/bin/bash
-# End-to-end timing harness: hyperfine over `unaea extract` on a real
+# End-to-end timing harness: hyperfine over `xaea extract` on a real
 # archive, one or more variants side by side, warm cache.
 #
 # Usage: scripts/bench.sh [options] [VARIANT...]
-#   VARIANT        name=extra unaea args, e.g. 'lzma=--decoder liblzma'
+#   VARIANT        name=extra xaea args, e.g. 'lzma=--decoder liblzma'
 #                  (default: one variant, "default", with no extra args)
 #   -f FILE        archive (default: fixtures/Xcode_27.3_beta_2.aea)
-#   -b BIN         unaea binary (default: build + use target/release/unaea)
+#   -b BIN         xaea binary (default: build + use target/release/xaea)
 #   -o DIR         scratch output dir, wiped before every run; must be on
 #                  the volume you want to measure (default: target/bench-out)
 #   -r N           timed runs per variant (default: 5)
@@ -51,7 +51,7 @@ command -v hyperfine >/dev/null || { echo "bench: needs hyperfine (brew install 
 [ -f "$fixture" ] || { echo "bench: no archive at $fixture (-f)" >&2; exit 1; }
 if [ -z "$bin" ]; then
     cargo build --release --quiet
-    bin=target/release/unaea
+    bin=target/release/xaea
 fi
 
 tmp=$(mktemp -d)
@@ -63,7 +63,7 @@ for v in "$@"; do
     name=${v%%=*}
     extra=${v#*=}
     [ "$name" != "$v" ] || { echo "bench: variant must be name=args, got '$v'" >&2; exit 2; }
-    # $extra is intentionally unquoted: it is a list of unaea flags.
+    # $extra is intentionally unquoted: it is a list of xaea flags.
     args+=(-n "$name" "$(printf '%q ' "$bin" extract "$fixture" -o "$out") $dry $extra")
 done
 

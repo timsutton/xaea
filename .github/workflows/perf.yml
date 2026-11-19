@@ -1,6 +1,6 @@
 name: Perf
 
-# Manual benchmark of unaea against the real Xcode AEA fixture on a GitHub
+# Manual benchmark of xaea against the real Xcode AEA fixture on a GitHub
 # runner. Numbers from shared runners are noisy and Linux is not the
 # speed-priority platform (macOS is), so treat them as a trend line and a
 # regression tripwire, not as headline figures. The runner CPU model is
@@ -91,7 +91,7 @@ jobs:
       - name: Benchmark (read-only paths)
         run: |
           mkdir -p perf
-          U=target/release/unaea
+          U=target/release/xaea
           hyperfine -N --warmup 1 --runs "$RUNS" \
             --export-json perf/readonly.json \
             -n "inspect --verify"          "$U inspect $AEA_FIXTURE --verify --json" \
@@ -102,7 +102,7 @@ jobs:
       - name: Benchmark (full extract)
         if: inputs.full_extract
         run: |
-          U=target/release/unaea
+          U=target/release/xaea
           OUT="$RUNNER_TEMP/out"
           hyperfine -N --warmup 1 --runs "$RUNS" \
             --prepare "rm -rf $OUT" \
@@ -116,13 +116,13 @@ jobs:
       # carry the decoder/writer config they were measured with.
       - name: Summarize
         run: |
-          SUMMARY=$(target/release/unaea extract "$AEA_FIXTURE" -o "$RUNNER_TEMP/dry" --dry-run --no-verify --json)
+          SUMMARY=$(target/release/xaea extract "$AEA_FIXTURE" -o "$RUNNER_TEMP/dry" --dry-run --no-verify --json)
           python3 - "$SUMMARY" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import glob, json, os, sys
           info = json.loads(sys.argv[1])
           nbytes = info["bytes"]
           cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "unknown CPU")
-          print(f"## unaea perf: {cpu}, {os.cpu_count()} cores, {nbytes / 2**30:.2f} GiB payload")
+          print(f"## xaea perf: {cpu}, {os.cpu_count()} cores, {nbytes / 2**30:.2f} GiB payload")
           print(f"\nThreads: {info['decoders']} decoders, {info['writers']} writers (defaults; decoders = cores-1, min 2)\n")
           print("| benchmark | mean | ± σ | min | MiB/s (mean) |")
           print("|---|---:|---:|---:|---:|")

@@ -10,7 +10,7 @@ use std::borrow::Cow;
 /// Which LZMA (.xz) implementation decodes segments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum XzDecoder {
-    /// liblzma (xz-utils), statically linked into unaea — portable default
+    /// liblzma (xz-utils), statically linked into xaea — portable default
     #[default]
     Liblzma,
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS

@@ -98,8 +98,8 @@ jobs:
       - run: cargo build --release --locked
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: unaea-linux-x86_64
-          path: target/release/unaea
+          name: xaea-linux-x86_64
+          path: target/release/xaea
 
   # cargo audit deferred to a follow-up PR: decide policy for the two
   # verify-only-inapplicable timing advisories (rsa RUSTSEC-2023-0071,

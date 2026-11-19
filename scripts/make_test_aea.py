@@ -180,7 +180,7 @@ def make_signer(rng_state: bytes):
     key = ec.derive_private_key(d, ec.SECP256R1())
     now = datetime.datetime.now(datetime.timezone.utc)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
-                                         "unaea synthetic test leaf")])
+                                         "xaea synthetic test leaf")])
     cert = (x509.CertificateBuilder()
             .subject_name(name).issuer_name(name)
             .public_key(key.public_key())
@@ -287,7 +287,7 @@ def assemble(stream: bytes, rng_state: bytes, key, cert_pem, point,
 
 
 def build(outdir: Path, seed: int) -> None:
-    rng_state = hashlib.sha256(f"unaea-test-{seed}".encode()).digest()
+    rng_state = hashlib.sha256(f"xaea-test-{seed}".encode()).digest()
     key, cert_pem, point = make_signer(rng_state)
 
     recs, expect = build_tree(rng_state)
@@ -339,7 +339,7 @@ def build(outdir: Path, seed: int) -> None:
 def build_evil(outdir: Path, seed: int) -> None:
     """Two adversarial archives; a safe extractor must fail both, and any
     partial writes must stay inside the output tree."""
-    rng_state = hashlib.sha256(f"unaea-test-{seed}-evil".encode()).digest()
+    rng_state = hashlib.sha256(f"xaea-test-{seed}-evil".encode()).digest()
     key, cert_pem, point = make_signer(rng_state)
     # evil1: tar-style link attack — symlink `app/up -> ..` plus a file
     # record whose path passes through it. Naive extractors write

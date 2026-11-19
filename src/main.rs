@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use envelope::XzDecoder;
 use std::path::PathBuf;
 
-/// unaea — fast extractor for Apple Encrypted Archives (Xcode edition)
+/// xaea — fast extractor for Apple Encrypted Archives (Xcode edition)
 #[derive(Parser)]
 #[command(version)]
 struct Cli {

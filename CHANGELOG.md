@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Changed
+
+* Renamed the tool from `unaea` to `xaea` (binary, crate, and the
+  `XAEA_STATS` environment variable, formerly `UNAEA_STATS`).
+
 ### Added
 
 * `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into

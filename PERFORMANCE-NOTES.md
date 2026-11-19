@@ -1,4 +1,4 @@
-# Performance notes — why `unaea` is as fast as it is
+# Performance notes — why `xaea` is as fast as it is
 
 This is the measured history behind the numbers in the README: which
 architecture decisions buy the speed, what the instrumentation showed,
@@ -19,9 +19,9 @@ CI perf workflow primes the page cache with a warmup run to match).
 
 | tool | time |
 |---|---|
-| **unaea**, verification on (default) | **10.6 s** |
-| **unaea** `--no-verify` | 9.0 s |
-| unaea `--dry-run` (decode+parse, no writes — the CPU floor) | 6.6 s |
+| **xaea**, verification on (default) | **10.6 s** |
+| **xaea** `--no-verify` | 9.0 s |
+| xaea `--dry-run` (decode+parse, no writes — the CPU floor) | 6.6 s |
 | unxip (same-version `.xip`, for scale) | 24.8 s |
 | Apple `archiveutil extractXcodeAEA` | 40.0 s |
 
@@ -34,7 +34,7 @@ absolute seconds will not.
 **The wall is filesystem-syscall serialization, not CPU and not write
 throughput.**
 
-`UNAEA_STATS=1` on the first M3 pipeline showed the parse+dispatch thread
+`XAEA_STATS=1` on the first M3 pipeline showed the parse+dispatch thread
 taking **13.0 s while the writer pool drained in +0.0 s**: writers were
 starved, and the parser's own `mkdir`/`open`/`pwrite` calls were the
 serialization point. Moving *every* filesystem syscall off the parser
@@ -92,7 +92,7 @@ concentrated the work).
 | writer queue | 32 per writer | queue depth 12 cost **~1.5 s** of parser throughput via backpressure; 32 restored in the hardening batch. Worst case pinned memory: writers × 32 × segment size ≈ **3 GiB** — deliberate trade, documented in `extract.rs` |
 
 Raw grid/A-B logs lived in `/tmp/bench_{grid,ab,g2,jobs}.log`
-(transient; regenerate with `UNAEA_STATS=1` runs before touching these
+(transient; regenerate with `XAEA_STATS=1` runs before touching these
 constants).
 
 ## Syscall diet: the ~137k `chmod`s that were never legal
@@ -187,7 +187,7 @@ included) against the oracle tree with `scripts/verify.sh`.
 
 ```sh
 cargo build --release
-UNAEA_STATS=1 ./target/release/unaea extract fixtures/Xcode_27.3_beta_2.aea -o /tmp/out
+XAEA_STATS=1 ./target/release/xaea extract fixtures/Xcode_27.3_beta_2.aea -o /tmp/out
 # prints: parse+dispatch time, writer drain time — the two numbers that
 # tell you which side of the pipeline is the bottleneck.
 ./scripts/verify.sh <new-tree> <oracle-tree>   # correctness gate, always
