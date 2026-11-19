@@ -40,13 +40,14 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - name: Install zig 0.17.1
-        run: |
-          curl --fail --location --silent --show-error \
-            --output zig.tar.xz https://ziglang.org/download/0.17.1/x86_64-linux-0.17.1.tar.xz
-          sudo tar -xJf zig.tar.xz -C /usr/local
-          sudo ln -s /usr/local/zig/x86_64-linux-0.17.1/zig /usr/local/bin/zig
-          zig version
+      # Zig supplies the linker that cargo-zigbuild drives for aarch64.
+      # Pinned as an action rather than a curl'd tarball so Renovate's
+      # github-actions manager tracks the ref and digest; the Zig release is
+      # the `version` input below.
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.1
       - name: Install cargo-zigbuild
         run: cargo install --locked cargo-zigbuild
       - name: GoReleaser
