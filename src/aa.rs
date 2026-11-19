@@ -147,6 +147,11 @@ impl<P: Sink> Stream<P> {
             _ => anyhow::bail!("AA01 stream ended mid-record/mid-blob"),
         }
     }
+
+    /// Recover the sink (used by tests; the extractor drives to completion).
+    pub fn into_sink(self) -> P {
+        self.sink
+    }
 }
 
 /// Parse a record body (everything after the 6-byte header).
@@ -234,5 +239,135 @@ trait ContextAny<T> {
 impl<T> ContextAny<T> for Option<T> {
     fn context_any(self, msg: &'static str) -> Result<T> {
         self.ok_or_else(|| anyhow::anyhow!(msg))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Ev {
+        recs: Vec<Record>,
+        blob: Vec<u8>,
+    }
+    impl Sink for Ev {
+        fn record(&mut self, r: &Record) -> Result<()> {
+            self.recs.push(r.clone());
+            Ok(())
+        }
+        fn blob(&mut self, p: Piece) -> Result<()> {
+            self.blob.extend_from_slice(p.bytes());
+            Ok(())
+        }
+    }
+
+    fn t(key: &str, fmt: char, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + payload.len());
+        v.extend_from_slice(key.as_bytes());
+        v.push(fmt as u8);
+        v.extend_from_slice(payload);
+        v
+    }
+    fn rec(body: &[u8]) -> Vec<u8> {
+        let mut v = b"AA01".to_vec();
+        v.extend_from_slice(&(6u16 + body.len() as u16).to_le_bytes());
+        v.extend_from_slice(body);
+        v
+    }
+    fn bytes16(n: u16, tail: &[u8]) -> Vec<u8> {
+        let mut v = n.to_le_bytes().to_vec();
+        v.extend_from_slice(tail);
+        v
+    }
+    fn pat(s: &str) -> Vec<u8> {
+        t("PAT", 'P', &bytes16(s.len() as u16, s.as_bytes()))
+    }
+    fn dir_rec(path: &str) -> Vec<u8> {
+        let mut body = t("TYP", '1', &[b'D']);
+        body.extend(pat(path));
+        body.extend(t("MOD", '2', &0o40_755u16.to_le_bytes()));
+        rec(&body)
+    }
+    fn file_rec(path: &str, dat: u16) -> Vec<u8> {
+        let mut body = t("TYP", '1', &[b'F']);
+        body.extend(pat(path));
+        body.extend(t("MOD", '2', &0o100_644u16.to_le_bytes()));
+        if dat > 0 {
+            body.extend(t("DAT", 'A', &dat.to_le_bytes()));
+        }
+        body.extend(t("FLG", '1', &[0x20]));
+        body.extend(t("AFT", '1', &[0x14]));
+        rec(&body)
+    }
+    fn link_rec(path: &str, target: &str) -> Vec<u8> {
+        let mut body = t("TYP", '1', &[b'L']);
+        body.extend(pat(path));
+        body.extend(t("LNK", 'P', &bytes16(target.len() as u16, target.as_bytes())));
+        body.extend(t("MOD", '2', &0o120_777u16.to_le_bytes()));
+        rec(&body)
+    }
+
+    #[test]
+    fn parser_survives_every_chunking() {
+        let blob: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        let blob2: Vec<u8> = vec![0xAA, 0xBB];
+        let mut s = Vec::new();
+        s.extend(dir_rec("d"));
+        s.extend(file_rec("d/f.bin", 300));
+        s.extend(&blob);
+        s.extend(link_rec("d/l", "f.bin"));
+        s.extend(file_rec("d/empty", 0));
+        s.extend(file_rec("d/tiny", 2));
+        s.extend(&blob2);
+
+        for &chunk in &[1usize, 2, 3, 5, 7, 64, 1000, s.len()] {
+            let mut st = Stream::new(Ev { recs: vec![], blob: vec![] });
+            for c in s.chunks(chunk) {
+                st.feed(Arc::from(c.to_vec().into_boxed_slice())).unwrap();
+            }
+            st.finish().unwrap();
+            let Ev { recs, blob: got } = st.into_sink();
+            assert_eq!(recs.len(), 5, "chunk={chunk}");
+            assert_eq!(recs[0].typ, b'D');
+            assert_eq!(recs[1].typ, b'F');
+            assert_eq!(recs[1].dat, 300);
+            assert_eq!(recs[2].typ, b'L');
+            assert_eq!(recs[2].link.as_deref(), Some("f.bin".as_bytes()));
+            assert_eq!(recs[3].dat, 0);
+            assert_eq!(recs[4].dat, 2);
+            let mut want = blob.clone();
+            want.extend_from_slice(&blob2);
+            assert_eq!(got, want, "blob bytes, chunk={chunk}");
+        }
+    }
+
+    #[test]
+    fn parser_rejects_garbage_and_truncation() {
+        // Bad magic -> error naming desync.
+        let mut st = Stream::new(Ev { recs: vec![], blob: vec![] });
+        let e = st.feed(Arc::from(b"XXXX\x08\x00".to_vec().into_boxed_slice()))
+            .unwrap_err();
+        assert!(e.to_string().contains("desync"), "{e}");
+
+        // Trailing partial record -> finish() errors.
+        let mut st = Stream::new(Ev { recs: vec![], blob: vec![] });
+        st.feed(Arc::from(dir_rec("a")[..4].to_vec().into_boxed_slice()))
+            .unwrap();
+        assert!(st.finish().is_err());
+
+        // Blob promised but never delivered -> finish() errors.
+        let mut st = Stream::new(Ev { recs: vec![], blob: vec![] });
+        st.feed(Arc::from(file_rec("f", 300))).unwrap();
+        assert!(st.finish().is_err());
+    }
+
+    #[test]
+    fn unknown_tag_is_rejected() {
+        let mut body = t("TYP", '1', &[b'D']);
+        body.extend(pat("x"));
+        body.extend(t("ZZZ", '1', &[0]));
+        let mut st = Stream::new(Ev { recs: vec![], blob: vec![] });
+        let e = st.feed(Arc::from(rec(&body))).unwrap_err();
+        assert!(e.to_string().contains("unknown AA01 tag"), "{e}");
     }
 }

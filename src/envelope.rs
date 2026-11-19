@@ -25,8 +25,10 @@ pub struct Profile(pub [u8; 3]);
 impl Profile {
     pub const NO_ENC_SIGNED: Profile = Profile([0, 0, 0]);
 
+    /// The profile id is a 24-bit little-endian number whose low byte encodes
+    /// the signature scheme (even = signed, odd = unsigned).
     pub fn signed(&self) -> bool {
-        matches!(self.0[2], 0 | 2 | 4)
+        matches!(self.0[0], 0 | 2 | 4)
     }
     pub fn encrypted(&self) -> bool {
         self.0 != [0, 0, 0]
@@ -178,11 +180,11 @@ impl<'a> Envelope<'a> {
             compression: rh[0x18],
             checksum: rh[0x19],
         };
-        ensure!(root.segment_size >= 0x4000, "segment size too small");
-        ensure!(
-            root.segments_per_cluster >= 32,
-            "segments per cluster too small"
-        );
+        // Sanity floors only: they reject garbage headers, while still
+        // admitting spec-legal small geometries (our test archive uses
+        // 64 KiB segments × 2 per cluster; Apple ships 16 MiB × 256).
+        ensure!(root.segment_size >= 0x1000, "segment size too small");
+        ensure!(root.segments_per_cluster >= 1, "no segments per cluster");
         ensure!(
             checksum_name(root.checksum) != "unknown",
             "unknown checksum algorithm {}",
@@ -213,6 +215,7 @@ impl<'a> Envelope<'a> {
         // Walk clusters/segments purely from the segment headers.
         let total_segments = root.original_size.div_ceil(root.segment_size as u64).max(1);
         let mut clusters = Vec::new();
+        let mut sum_orig = 0u64;
         let mut idx = 0u64;
         let mut cur = chmac_off + 32;
         let mut cidx = 0u32;
@@ -230,7 +233,20 @@ impl<'a> Envelope<'a> {
             cur += spc * 32;
             let data_off = cur;
             for s in 0..n {
-                let comp = u32le(file, seghdrs_off + (s as usize) * seg_hdr_len + 4)? as usize;
+                let ho = seghdrs_off + (s as usize) * seg_hdr_len;
+                // Hostile-header limits (review #6): a decoded segment can
+                // never exceed the declared segment size, and the decoded
+                // sizes must sum to the declared payload size — otherwise a
+                // crafted header could force multi-GiB allocations per
+                // decoder thread.
+                let orig = u32le(file, ho)?;
+                ensure!(
+                    orig <= root.segment_size,
+                    "segment {idx} decoded size {orig} exceeds segment_size {}",
+                    root.segment_size
+                );
+                let comp = u32le(file, ho + 4)? as usize;
+                sum_orig += orig as u64;
                 cur += comp;
             }
             ensure!(
@@ -253,6 +269,11 @@ impl<'a> Envelope<'a> {
             cur == file.len(),
             "geometry mismatch: segments end at {cur}, file size is {} (truncated download or spec drift?)",
             file.len()
+        );
+        ensure!(
+            sum_orig == root.original_size,
+            "segment decoded sizes sum to {sum_orig}, root header declares original_size {}",
+            root.original_size
         );
 
         Ok(Self {

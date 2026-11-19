@@ -452,3 +452,32 @@ pub fn verify_all(
         sig_padded_ok,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_known_vectors() {
+        assert_eq!(base64_decode(b"").unwrap(), Vec::<u8>::new());
+        assert_eq!(base64_decode(b"Zm9v").unwrap(), b"foo");
+        assert_eq!(base64_decode(b"YQ==").unwrap(), b"a");
+        assert_eq!(base64_decode(b"YWI=").unwrap(), b"ab");
+        assert_eq!(base64_decode(b"Zm9vCmJhcgo=").unwrap(), b"foo\nbar\n");
+        // Regression: a partial trailing chunk must be emitted from the TOP
+        // of the accumulator: "KA==" == 0b001010 -> 0x28 (not 0x80).
+        assert_eq!(base64_decode(b"KA==").unwrap(), vec![0x28]);
+        assert_eq!(base64_decode(b"TWFu").unwrap(), b"Man");
+        assert!(base64_decode(b"Zm9!").is_err());
+    }
+
+    #[test]
+    fn pem_split_roundtrip() {
+        // "MIIBAmR1bW15" is the base64 of 30 82 01 02 'dummy'.
+        let pem = "-----BEGIN CERTIFICATE-----\nMIIBAmR1bW15\n-----END CERTIFICATE-----\n";
+        let out = split_pem(pem.as_bytes()).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], b"\x30\x82\x01\x02dummy");
+        assert!(split_pem(b"no pem here").is_err());
+    }
+}

@@ -5,3 +5,4 @@
 *.aea
 .DS_Store
 *.xip
+/CLAUDE-CODE-REVIEW.md

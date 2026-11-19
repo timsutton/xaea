@@ -56,3 +56,57 @@ pub fn segment_key(ck: &[u8], segment_index: u32) -> Vec<u8> {
     info.extend_from_slice(&segment_index.to_le_bytes());
     hkdf(ck, b"", &info, 32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    fn tohex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    // Deterministic reference vectors from scripts/make_test_aea.py (seed 1).
+    const IKM: &str = "cf79c803a652844e73ef07a4adca87326100c2e832e235f910435197540b0c7b";
+    const SALT: &str = "fcf9f813dd58c073b00f90944fa7f451f75e6411f938a43b60fd9ba7a02a84b2";
+    const POINT: &str = "04c05b71ed588f050e3e407f278d3b56621bc9c89e5c09e73cc3e35052f7\
+                         9440f9fd2c883b2e923e805e0790bca7a35f1537581221cab92487f27bded0aa2f5350";
+    const MAINKEY: &str = "54b3c3698358a622f54dd76f6b6c62e028df7cccf098be55c2f66335b14ad3fd";
+    const ROOTKEY: &str = "cc07bdd7909a3a1a8d4c335d8a6c9f49a8ad1d03f487eb15a9a5a263d404bb5e";
+    const CK0: &str = "8360b797ea4f3e8cf907b8dbeb8b69d433951fc6feb6ce72664114b10f91ea06";
+    const CHEK0: &str = "20f8daea78d9c94de7c59e6cb2099290d9a92eb0b30d290b03c62332264a8d6b";
+    const SEG0: &str = "c17bf80c8279a38a9ba8806e75ddc33899cff3205b51406aa2e60c9ba42b945a";
+
+    #[test]
+    fn kdf_chain_matches_python_reference() {
+        let mk = main_key(&unhex(IKM), &unhex(SALT), b"\x00\x00\x00\x00", &unhex(POINT));
+        assert_eq!(tohex(&mk), MAINKEY, "main key (info AEA_AMK||hdr48||point)");
+        assert_eq!(tohex(&root_header_key(&mk)), ROOTKEY);
+        let ck = cluster_key(&mk, 0);
+        assert_eq!(tohex(&ck), CK0);
+        assert_eq!(tohex(&cluster_header_key(&ck)), CHEK0);
+        assert_eq!(tohex(&segment_key(&ck, 0)), SEG0);
+        // local index must matter
+        assert_ne!(segment_key(&ck, 0), segment_key(&ck, 1));
+    }
+
+    #[test]
+    fn mac_layout_is_salt_data_len() {
+        use hmac::Mac;
+        let k = [7u8; 32];
+        let (d, s) = (b"hello".as_slice(), b"salt".as_slice());
+        let mut manual: Vec<u8> = s.to_vec();
+        manual.extend_from_slice(d);
+        manual.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        let mut m = Hmac::<Sha256>::new_from_slice(&k).unwrap();
+        m.update(&manual);
+        let expect: [u8; 32] = m.finalize().into_bytes().into();
+        assert_eq!(mac(&k, d, s), expect);
+        assert_ne!(mac(&k, d, b""), mac(&k, d, s));
+    }
+}
