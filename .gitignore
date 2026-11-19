@@ -6,3 +6,6 @@
 .DS_Store
 *.xip
 /CLAUDE-CODE-REVIEW.md
+package.json
+package-lock.json
+node_modules/
