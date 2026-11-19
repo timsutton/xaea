@@ -343,17 +343,42 @@ impl<'a> Envelope<'a> {
 
     // ---- verification ---------------------------------------------------
 
+    /// The archive's AES-master-key equivalent (AEA_AMK): the root of the
+    /// HMAC key tree, bound to the signing certificate's public point.
+    pub fn main_key(&self, signing_point: &[u8]) -> Vec<u8> {
+        kdf::main_key(
+            &self.file[self.pubkey_off..self.pubkey_off + 32],
+            &self.file[self.mainsalt_off..self.mainsalt_off + 32],
+            &self.file[4..8],
+            signing_point,
+        )
+    }
+
     pub fn verify_mac(&self, signing_point: &[u8]) -> Result<MacReport> {
         ensure!(
             !self.profile.encrypted(),
             "MAC verification for encrypted profiles not implemented"
         );
-        let main = kdf::main_key(
-            &self.file[self.pubkey_off..self.pubkey_off + 32],
-            &self.file[self.mainsalt_off..self.mainsalt_off + 32],
-            &self.file[4..8],
-            signing_point,
-        );
+        let main = self.main_key(signing_point);
+        self.verify_mac_keyed(&main)
+    }
+
+    /// Root + cluster + segment MACs, given the main key (so the expensive
+    /// segment pass can run concurrently with extraction).
+    pub fn verify_mac_keyed(&self, main: &[u8]) -> Result<MacReport> {
+        let (root_mac_ok, cluster_macs_ok, chmac_variant) = self.verify_header_macs(main)?;
+        Ok(MacReport {
+            root_mac_ok,
+            cluster_macs_ok,
+            chmac_variant,
+            segmac_failed: self.verify_segment_macs(main),
+        })
+    }
+
+    /// Root + cluster header MACs only — microseconds, no segment pass.
+    /// Extraction runs these synchronously and folds the segment pass into
+    /// the decode pipeline via [`Self::verify_segment_macs`].
+    pub fn verify_header_macs(&self, main: &[u8]) -> Result<(bool, bool, Option<usize>)> {
         let root_key = kdf::root_header_key(&main);
         let first_chmac = &self.file[self.chmac_off..self.chmac_off + 32];
         let mut salt = first_chmac.to_vec();
@@ -407,27 +432,58 @@ impl<'a> Envelope<'a> {
             }
         }
 
-        // Segment MACs (profile 0): mac(segment_key(cluster-local index),
-        // stored segment bytes, empty salt). Check every segment.
-        let mut segmac_failed: Vec<u32> = Vec::new();
+        Ok((root_mac_ok, cluster_macs_ok, chmac_variant))
+    }
+
+    /// Segment MACs (profile 0): mac(segment_key(cluster-local index),
+    /// stored segment bytes, empty salt). A full HMAC pass over the
+    /// compressed data, run in parallel chunks; during extraction it runs
+    /// concurrently with decoding (cheap on memory bandwidth, mostly not on
+    /// the critical path).
+    pub fn verify_segment_macs(&self, main: &[u8]) -> Vec<u32> {
+        let nthreads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .clamp(1, 32);
+        self.verify_segment_macs_with(main, nthreads)
+    }
+
+    /// Segment-MAC pass with an explicit thread count (extraction uses a
+    /// small one so it hides under the decode pipeline instead of racing
+    /// the decoders for cores).
+    pub fn verify_segment_macs_with(&self, main: &[u8], nthreads: usize) -> Vec<u32> {
         let ckeys: Vec<Vec<u8>> = (0..self.clusters.len() as u32)
-            .map(|i| kdf::cluster_key(&main, i))
+            .map(|i| kdf::cluster_key(main, i))
             .collect();
         let spc = self.root.segments_per_cluster;
-        for sg in self.segments() {
-            let local = sg.index - sg.cluster * spc;
-            let segkey = kdf::segment_key(&ckeys[sg.cluster as usize], local);
-            if kdf::mac(&segkey, sg.data, b"") != *sg.mac {
-                segmac_failed.push(sg.index);
+        let segs = self.segments();
+        let nthreads = nthreads.clamp(1, 32);
+        let chunk = segs.len().div_ceil(nthreads);
+        let mut segmac_failed: Vec<u32> = Vec::new();
+        std::thread::scope(|scope| {
+            let results: Vec<_> = (0..nthreads)
+                .map(|t| {
+                    let part = &segs[(t * chunk).min(segs.len())..((t + 1) * chunk).min(segs.len())];
+                    let ckeys = &ckeys;
+                    scope.spawn(move || {
+                        let mut failed = Vec::new();
+                        for sg in part {
+                            let local = sg.index - sg.cluster * spc;
+                            let segkey = kdf::segment_key(&ckeys[sg.cluster as usize], local);
+                            if kdf::mac(&segkey, sg.data, b"") != *sg.mac {
+                                failed.push(sg.index);
+                            }
+                        }
+                        failed
+                    })
+                })
+                .collect();
+            for r in results {
+                segmac_failed.extend(r.join().unwrap());
             }
-        }
-
-        Ok(MacReport {
-            root_mac_ok,
-            cluster_macs_ok,
-            chmac_variant,
-            segmac_failed,
-        })
+        });
+        segmac_failed.sort_unstable();
+        segmac_failed
     }
 
     /// Verify per-segment checksums. Empirically (Xcode 27.3 b2) the checksum

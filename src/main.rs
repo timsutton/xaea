@@ -43,6 +43,10 @@ enum Commands {
         /// Parse and decode everything, but write no files
         #[arg(long)]
         dry_run: bool,
+        /// Skip signature/chain/MAC/checksum verification (trusted input
+        /// only; verification is on by default)
+        #[arg(long)]
+        no_verify: bool,
         /// Decoder threads (default: cores-1, min 2)
         #[arg(short, long)]
         jobs: Option<usize>,
@@ -59,8 +63,6 @@ enum Commands {
     },
 }
 
-const APPLE_ROOTS: &[u8] = include_bytes!("../assets/AppleRootCA.pem");
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
@@ -75,12 +77,13 @@ fn main() -> Result<()> {
             out,
             json,
             dry_run,
+            no_verify,
             jobs,
             writers,
             prealloc,
             quarantine,
         } => extract_cmd(
-            &file, &out, json, dry_run, jobs, writers, prealloc, quarantine,
+            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, quarantine,
         ),
     }
 }
@@ -103,6 +106,10 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
 
     let mut report_checks = Vec::new();
     let mut certs_summary = serde_json::json!(null);
+    // Every integrity check folded in (any false ⇒ non-zero exit, review
+    // #3). trusted_root is *reported* but does not fail: re-signed or
+    // private-CA archives stay inspectable.
+    let mut integrity_ok = true;
 
     if verify {
         // Signature & chain first: the leaf signing key feeds the main-key KDF.
@@ -114,13 +121,16 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
             .context("no certificate-chain auth pair")?;
         let auth = sigverify::verify_all(
             &chain,
-            APPLE_ROOTS,
+            sigverify::APPLE_ROOTS,
             &env.file[env.sig_off..env.sig_off + envelope::SIGNATURE_LEN],
             &env.signed_prefix(),
         )?;
         let mac = env
             .verify_mac(auth.certs[0].point())
             .context("MAC verification")?;
+        integrity_ok &= mac.root_mac_ok
+            && mac.cluster_macs_ok
+            && mac.segmac_failed.is_empty();
         report_checks.push(serde_json::json!({
             "root_mac_ok": mac.root_mac_ok,
             "cluster_macs_ok": mac.cluster_macs_ok,
@@ -131,6 +141,7 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
         if !no_checksums {
             let t0 = std::time::Instant::now();
             let (ok, failed) = env.verify_checksums(std::thread::available_parallelism()?.get())?;
+            integrity_ok &= failed.is_empty();
             report_checks.push(serde_json::json!({
                 "checksums_ok": ok, "checksums_failed": failed,
                 "checksum_seconds": t0.elapsed().as_secs_f64(),
@@ -145,10 +156,18 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
                 "valid": [c.not_before, c.not_after],
             }))
             .collect::<Vec<_>>());
+        integrity_ok &= auth.content_sig_ok
+            && auth.sig_padded_ok
+            && auth.chain_all_ok
+            && auth.ca_ok
+            && auth.valid_now;
         report_checks.push(serde_json::json!({
             "content_signature_ok": auth.content_sig_ok,
             "signature_padded_ok": auth.sig_padded_ok,
             "chain_ok": auth.chain_ok,
+            "chain_all_ok": auth.chain_all_ok,
+            "ca_ok": auth.ca_ok,
+            "valid_now": auth.valid_now,
             "trusted_root": auth.trusted_root,
         }));
     }
@@ -177,6 +196,9 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
 
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
+        if verify && !integrity_ok {
+            anyhow::bail!("verification FAILED (see checks in the JSON report)");
+        }
         return Ok(());
     }
 
@@ -221,6 +243,9 @@ fn inspect(path: &std::path::Path, json: bool, verify: bool, no_checksums: bool)
             }
         }
     }
+    if verify && !integrity_ok {
+        anyhow::bail!("verification FAILED (see checks above)");
+    }
     Ok(())
 }
 
@@ -230,6 +255,7 @@ fn extract_cmd(
     out: &std::path::Path,
     json: bool,
     dry_run: bool,
+    no_verify: bool,
     jobs: Option<usize>,
     writers: Option<usize>,
     prealloc: bool,
@@ -266,6 +292,7 @@ fn extract_cmd(
         writers: writers.unwrap_or(6),
         prealloc,
         quarantine,
+        verify: !no_verify,
     };
     let st = extract::extract(&env, path, &opts)?;
     let secs = t0.elapsed().as_secs_f64();
@@ -276,6 +303,7 @@ fn extract_cmd(
             serde_json::json!({
                 "out": out.display().to_string(),
                 "dry_run": dry_run,
+                "verified": !no_verify,
                 "decoders": opts.decoders, "writers": opts.writers,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,
