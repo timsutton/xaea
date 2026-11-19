@@ -23,6 +23,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Published binaries are built with the same pinned compiler as CI, so a
+  # released asset can be rebuilt bit-for-bit later. Keep in step with ci.yml.
+  RUST_VERSION: 1.100.0
 
 jobs:
   release:
@@ -38,7 +41,9 @@ jobs:
           # Full history — GoReleaser generates the release notes from the
           # commit log between tags.
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Zig supplies the linker that cargo-zigbuild drives for aarch64.
       # Pinned as an action rather than a curl'd tarball so Renovate's
