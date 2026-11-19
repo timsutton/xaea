@@ -32,7 +32,8 @@ enum Commands {
         #[arg(long)]
         no_checksums: bool,
         /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only)
+        /// `libcompression` (Apple's OS-provided library; macOS only;
+        /// roughly 5% faster full extracts measured on M3 Max)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
@@ -66,7 +67,8 @@ enum Commands {
         #[arg(long)]
         quarantine: bool,
         /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only)
+        /// `libcompression` (Apple's OS-provided library; macOS only;
+        /// roughly 5% faster full extracts measured on M3 Max)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
