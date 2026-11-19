@@ -9,7 +9,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into
   Apple's OS-provided libcompression LZMA decoder (macOS only) instead of
-  the vendored liblzma default; ~5–6% faster full extracts on M3 Max.
+  the vendored liblzma default. On M3 Max, full extracts were roughly 5%
+  faster (−4.7% and −5.8% across two runs, within ±0.3–0.5 s noise).
 * `scripts/bench.sh`: reusable end-to-end hyperfine harness comparing
   named variants of `unaea extract` on a real archive.
 
