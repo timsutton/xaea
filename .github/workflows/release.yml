@@ -29,6 +29,10 @@ env:
   # Published binaries are built with the same pinned compiler as CI, so a
   # released asset can be rebuilt bit-for-bit later. Keep in step with ci.yml.
   RUST_VERSION: 1.100.0
+  # Minimum macOS the darwin binaries support (rustc, cc and the SDK all honour
+  # it). Pinned so a toolchain bump can't silently raise it; keep in step with
+  # ci.yml, whose macos-minos job asserts it.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
   release:
