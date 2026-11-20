@@ -520,3 +520,17 @@ fn libcompression_decoder_matches_liblzma() {
     assert_eq!(trees[0], trees[1], "both decoders produce the same tree");
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn subcommand_shorthands_resolve_to_full_commands() {
+    // Needs no archive: `--help` output is unique per subcommand.
+    for (short, full, marker) in [("x", "extract", "--dry-run"), ("i", "inspect", "--verify")] {
+        let a = xaea().args([short, "--help"]).output().unwrap();
+        let b = xaea().args([full, "--help"]).output().unwrap();
+        assert!(a.status.success(), "`xaea {short} --help` succeeds");
+        let a = String::from_utf8_lossy(&a.stdout);
+        let b = String::from_utf8_lossy(&b.stdout);
+        assert!(a.contains(marker), "`{short}` shows {full}'s options");
+        assert_eq!(a, b, "`xaea {short}` and `xaea {full}` print the same help");
+    }
+}
