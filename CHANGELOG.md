@@ -34,13 +34,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   * **One-shot decode, no redundant checksum.** Segments are decoded with a
     single `lzma_stream_buffer_decode` call into an exact-size buffer (no
     input copy through a `BufReader`, no zero-filled output). When the
-    segment's SHA-256 is verified anyway (the default), liblzma's own CRC64
-    over the same bytes is skipped (`LZMA_IGNORE_CHECK`, redundant next to
-    the SHA-256 and segment MACs); `--no-verify` keeps it, since it is then
-    the only integrity check. This is the main decode-time win on Apple
-    Silicon: −8% to −9% per segment on M3 Max and M4 Max (e.g. 136.8 →
-    125.0 ms on M4 Max), and 110 → 93 ms on x86-64. Acceptance rules are
-    unchanged (single stream, exact declared size).
+    segment's SHA-256 is verified anyway (the default), liblzma's own check
+    over the same bytes is skipped (`LZMA_IGNORE_CHECK`); `--no-verify`
+    keeps it. Apple's segments declare no xz check, so on real archives
+    this flag changes nothing (it saves ~9% only on CRC64 streams); it
+    stays as future-proofing. Acceptance rules are unchanged (single
+    stream, exact declared size).
   * **No second copy of every segment.** Decoders write straight into the
     `Arc<[u8]>` shared with the writers instead of building a `Vec` that
     `Arc::from` then copied into a fresh 16 MiB allocation: ~9.7 GiB less

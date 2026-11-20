@@ -23,6 +23,7 @@ else
 fi
 dd if="$src" of="$work/seg.bin" bs=1048576 skip=20 count=16 2>/dev/null
 [ "$(wc -c <"$work/seg.bin")" -eq "$size" ] || { echo "input too small (need > 36 MiB)" >&2; exit 1; }
+xz -6 --check=none  -c "$work/seg.bin" >"$work/seg-none.xz"   # what Apple's segments use
 xz -6 --check=crc64 -c "$work/seg.bin" >"$work/seg.xz"
 
 for v in old new; do
@@ -62,7 +63,8 @@ echo "input: $src (16 MiB slice, xz -6 --check=crc64)  host: $(uname -m)"
 for r in 1 2; do
     for v in old new; do
         label=$([ $v = old ] && echo "xz 5.2.5" || echo "xz 5.8.4")
-        "$work/$v/target/release/xzb" "$work/seg.xz" $size check "$label, check on"
-        "$work/$v/target/release/xzb" "$work/seg.xz" $size ignore "$label, LZMA_IGNORE_CHECK"
+        "$work/$v/target/release/xzb" "$work/seg-none.xz" $size check "$label, no check (Apple)"
+        "$work/$v/target/release/xzb" "$work/seg.xz" $size check "$label, CRC64 checked"
+        "$work/$v/target/release/xzb" "$work/seg.xz" $size ignore "$label, CRC64, IGNORE_CHECK"
     done
 done

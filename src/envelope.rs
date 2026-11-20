@@ -70,9 +70,10 @@ pub(crate) unsafe fn segbuf_filled(
 ///
 /// `sha256_follows`: the caller will SHA-256 the decoded bytes against the
 /// segment checksum, which makes the .xz stream's own integrity check
-/// (typically CRC64 over the same decoded bytes) redundant, so liblzma
-/// skips it (`LZMA_IGNORE_CHECK`, ~12% of decode time in a benchmark).
-/// Without verification the xz check stays on — it is then the only one.
+/// (e.g. CRC64 over the same decoded bytes) redundant, so liblzma skips it
+/// (`LZMA_IGNORE_CHECK`; ~9% of decode time for CRC64 streams). Apple's own
+/// segments declare check type "none", so for them this flag changes nothing.
+/// Without verification the xz check stays on, if the stream has one.
 pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
     match dec {
         XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),

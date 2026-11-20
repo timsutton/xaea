@@ -187,9 +187,15 @@ backpressure ~1.5 s, inline decode checksums ~0.5–1 s, final-pass drain
   bytes the SHA-256 does). Microbenchmark, 16 MiB CRC64 segment, x86-64:
   110 ms → 93 ms together with the switch to one-shot
   `lzma_stream_buffer_decode` (no `BufReader` input copy, no zero-filled
-  output). With `--no-verify` the xz check stays on: it is then the only
-  integrity check. The saving assumes Apple's segments carry CRC64 (check
-  type: low nibble of byte offset 7 of each segment's stream header = 0x4).
+  output). With `--no-verify` the xz check stays on if the stream has one.
+  **Apple's segments don't:** every .xz stream header in the Xcode 27.3 b2
+  fixture declares check type 0 (none) — checked by scanning for the xz
+  magic and reading the low nibble of byte offset 7 (all 633 headers
+  found, which includes a few `.xz` files stored inside segments; the 624
+  real segments are among them). So this flag is a no-op on real archives
+  (measured below); the "110 → 93 ms" above came from a synthetic CRC64
+  stream and should not be read as an Apple-archive number. It stays in
+  as harmless future-proofing should Apple start emitting a check.
 
 Net: verification costs **1.6 s of a 10.6 s run** (10.6 vs 9.0), which
 is why it's the default.
@@ -207,10 +213,8 @@ included) against the oracle tree with `scripts/verify.sh`.
 ## What the xz upgrade does (and doesn't) buy
 
 The PR moves the vendored xz-utils from 5.2.5 (`xz2`/`lzma-sys`) to 5.8.4
-(`liblzma-sys`). **On Apple Silicon this does not make the decoder faster.**
-The decode-time gain on M-series comes from skipping the redundant CRC64
-(`LZMA_IGNORE_CHECK`, available in 5.2.5 too), the one-shot call and the
-removed per-segment copy — not from the xz version.
+(`liblzma-sys`). **On Apple Silicon this does not make the decoder faster**,
+and neither does skipping the xz integrity check on Apple's archives.
 
 Why, from the vendored sources' NEWS and `rangecoder/range_decoder.h`:
 
@@ -226,37 +230,46 @@ Why, from the vendored sources' NEWS and `rangecoder/range_decoder.h`:
   range decoder) **only** for x86-64 with GCC/Clang, and `0` (basic C)
   everywhere else, including every `aarch64` build. So Apple Silicon runs
   the basic C decoder; 5.6+ only tweaked that path by "a few percent over
-  5.4.x" per the NEWS, and nothing that shows against 5.2.5 here.
+  5.4.x" per the NEWS, which does not show against 5.2.5 here.
 - 5.8.0 added SSE2 intrinsics instead of `memcpy()` in the LZMA/LZMA2
   decoder on 32/64-bit x86 (0–5% typically, >15% on musl with highly
   compressed data). Also x86-only.
 
 Measured, one real 16 MiB slice of an Xcode binary (`LLDB.framework`),
-`xz -6 --check=crc64`, single thread, `lzma_stream_buffer_decode`,
-best of 15, `scripts/xz_decoder_bench.sh`:
+`lzma_stream_buffer_decode`, single thread, best of 15,
+`scripts/xz_decoder_bench.sh`. The "no check" rows are what Apple's
+segments actually look like (check type none); the CRC64 rows are a
+stream made with `xz -6 --check=crc64`, for comparison:
 
 | | 5.2.5 | 5.8.4 |
 |---|---|---|
-| M3 Max, CRC64 checked | 170.3 / 168.7 ms | 171.6 / 168.2 ms |
-| M3 Max, `LZMA_IGNORE_CHECK` | 153.9 / 158.9 ms | 157.1 / 154.2 ms |
+| M4 Max, no check | 124.7 / 124.8 / 124.8 ms | 125.0 ms |
+| M4 Max, no check + `LZMA_IGNORE_CHECK` | — | 124.9 / 125.0 ms |
+| M3 Max, no check | 167.7 / 155.8 / 162.8 ms | 161.6 / 155.6 / 162.1 ms |
 | M4 Max, CRC64 checked | 136.5 ms | 136.8 ms |
-| M4 Max, `LZMA_IGNORE_CHECK` | 124.8 ms | 125.0 ms |
-| x86-64 Xeon (earlier session, not re-run), CRC64 checked | 143 ms | 110 ms (−23%) |
+| M4 Max, CRC64, `LZMA_IGNORE_CHECK` | 124.8 ms | 125.0 ms |
+| M3 Max, CRC64 checked | 170.3 / 168.7 ms | 171.6 / 168.2 ms |
+| M3 Max, CRC64, `LZMA_IGNORE_CHECK` | 153.9 / 158.9 ms | 157.1 / 154.2 ms |
+| x86-64 Xeon, CRC64 checked (earlier session, not re-run) | 143 ms | 110 ms (−23%) |
 
-- aarch64: identical within noise between versions; skipping the CRC64
-  is worth −8% to −9% on both versions (CRC64 is computed over every
-  decoded byte, with no hardware acceleration on ARM64).
-- x86-64: the −23% is the asm range decoder (plus the C tweaks). It
+- **aarch64:** the two versions are identical within noise, with or without
+  a check. `LZMA_IGNORE_CHECK` is worth −8–9% *only* for streams that carry
+  a CRC64 (it saves the CRC64 pass), which Apple's do not, so it changes
+  nothing on real archives.
+- **x86-64:** the −23% is the asm range decoder (plus the C tweaks). It
   applies to the Intel slice of the universal macOS binary and to Linux
   x86-64, not to the M-series numbers in this document.
 
 So the xz bump is worth keeping for x86-64 and for being a maintained,
-current library, but the M3/M4 gains in this PR attribute to:
-`LZMA_IGNORE_CHECK` (≈ −8–9% decode CPU), the one-shot call (no
-`BufReader` input copy, no zero-filled output) and the removed
-`Arc::from(Box<[u8]>)` copy (≈ 9.7 GiB less `memcpy`).
+current library. The measured M3/M4 gains in this PR do **not** come from
+the xz version or from the CRC skip; they come from the other changes
+(the one-shot decode call with no `BufReader` input copy and no
+zero-filled output, the removed `Arc::from(Box<[u8]>)` copy of ≈ 9.7 GiB
+per extract, fewer syscalls, read-ahead). The decode-only −4.4% on M4 Max
+is real, but how it splits between the one-shot call and the removed copy
+has not been isolated.
 
-### Why skipping the CRC64 is safe here
+### Skipping the xz check is safe here, and moot for Apple archives
 
 liblzma's documentation says `LZMA_IGNORE_CHECK` should not be used
 unless the data's integrity is verified externally. It is: with
@@ -264,9 +277,10 @@ verification on (the default), every decoded segment is SHA-256'd
 against the segment checksum from the archive before any of its bytes
 reach the filesystem, and every segment's MAC over the *compressed*
 bytes is checked concurrently (joined before the final pass). Both are
-stronger than CRC64 and cover the same bytes. With `--no-verify` there
-is no external check, so the .xz CRC64 stays on — it is then the only
-integrity check — and the SHA-256/MAC work is skipped entirely.
+stronger than any xz check and cover the same bytes. Since Apple's
+segments carry no xz check at all, `--no-verify` extractions of Apple
+archives have no integrity checking in the decode path (only the size
+check); that matches what `--no-verify` documents.
 
 ## Profiling build (`--features profile`)
 
