@@ -121,25 +121,11 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
-      # Check what actually shipped in the darwin archives: signed with a
-      # Developer ID, hardened runtime on, and (universal or not) every slice
-      # signed. Notarization itself can't be checked offline; GoReleaser waits
-      # for Apple's verdict and fails the step if it's rejected.
+      # Check what actually shipped in the darwin archive: Developer ID-signed
+      # with the hardened runtime. Notarization can't be checked offline;
+      # GoReleaser waits for Apple's verdict and fails the step on rejection.
+      # The script is a no-op when signing is off (no MACOS_SIGN_P12).
       - name: Verify macOS signatures
-        if: ${{ !inputs.snapshot }}
-        run: |
-          shopt -s nullglob
-          archives=(dist/xaea_*_darwin_*.tar.gz)
-          [ ${#archives[@]} -gt 0 ] || { echo "::error::no darwin archives in dist/"; exit 1; }
-          for a in "${archives[@]}"; do
-            d=$(mktemp -d)
-            tar -xzf "$a" -C "$d" xaea
-            codesign --verify --strict --verbose=2 "$d/xaea"
-            info=$(codesign -dvv "$d/xaea" 2>&1)
-            echo "$info"
-            grep -q 'Authority=Developer ID Application' <<<"$info" \
-              || { echo "::error::$a is not Developer ID-signed"; exit 1; }
-            grep -Eq 'flags=0x[0-9a-f]+\(.*runtime' <<<"$info" \
-              || { echo "::error::$a lacks the hardened runtime"; exit 1; }
-            rm -rf "$d"
-          done
+        run: scripts/verify-macos-signature.sh dist
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
