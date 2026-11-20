@@ -1017,6 +1017,7 @@ dependencies = [
  "hmac",
  "libc",
  "liblzma",
+ "liblzma-sys",
  "memmap2",
  "p256",
  "p384",

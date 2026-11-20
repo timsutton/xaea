@@ -38,26 +38,77 @@ impl XzDecoder {
 
 /// Decompress one standalone .xz-stream segment whose decoded size `orig`
 /// is known from the segment header; anything else is an error.
-pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder) -> Result<Vec<u8>> {
+///
+/// `sha256_follows`: the caller will SHA-256 the decoded bytes against the
+/// segment checksum, which makes the .xz stream's own integrity check
+/// (typically CRC64 over the same decoded bytes) redundant, so liblzma
+/// skips it (`LZMA_IGNORE_CHECK`, ~12% of decode time in a benchmark).
+/// Without verification the xz check stays on — it is then the only one.
+pub fn decode_xz(
+    data: &[u8],
+    orig: usize,
+    dec: XzDecoder,
+    sha256_follows: bool,
+) -> Result<Vec<u8>> {
     match dec {
-        XzDecoder::Liblzma => {
-            use std::io::Read;
-            let mut out = Vec::with_capacity(orig);
-            liblzma::read::XzDecoder::new(data)
-                .read_to_end(&mut out)
-                .context("xz decode")?;
-            ensure!(
-                out.len() == orig,
-                "xz decoded size mismatch ({} vs {orig})",
-                out.len()
-            );
-            Ok(out)
-        }
+        XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),
         #[cfg(target_os = "macos")]
         XzDecoder::Libcompression => libcompression::decode(data, orig),
         #[cfg(not(target_os = "macos"))]
         XzDecoder::Libcompression => bail!("libcompression is only available on macOS"),
     }
+}
+
+/// One-shot liblzma decode (`lzma_stream_buffer_decode`) straight into an
+/// exact-size buffer: no `Read`/`BufReader` layer copying the input through
+/// a small buffer, no zero-filling of the output before decoding into it.
+/// Same acceptance as the streaming decoder it replaces: one .xz stream,
+/// decoded size exactly `orig` (longer → LZMA_BUF_ERROR, shorter → size
+/// mismatch), bytes after the end of the stream ignored.
+fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<Vec<u8>> {
+    use liblzma_sys as lz;
+    let mut out = Vec::<u8>::with_capacity(orig);
+    let flags = if ignore_check {
+        lz::LZMA_IGNORE_CHECK
+    } else {
+        0
+    };
+    let (mut memlimit, mut in_pos, mut out_pos) = (u64::MAX, 0usize, 0usize);
+    // SAFETY: `data` is a valid input buffer of `data.len()` bytes and `out`
+    // has capacity for `orig` bytes; liblzma writes at most `orig` bytes to
+    // `out` and reports how many in `out_pos`.
+    let ret = unsafe {
+        lz::lzma_stream_buffer_decode(
+            &mut memlimit,
+            flags,
+            std::ptr::null(),
+            data.as_ptr(),
+            &mut in_pos,
+            data.len(),
+            out.as_mut_ptr(),
+            &mut out_pos,
+            orig,
+        )
+    };
+    let what = match ret {
+        lz::LZMA_OK => None,
+        lz::LZMA_FORMAT_ERROR => Some("not an .xz stream"),
+        lz::LZMA_OPTIONS_ERROR => Some("unsupported .xz options"),
+        lz::LZMA_DATA_ERROR => Some("corrupt data"),
+        lz::LZMA_BUF_ERROR => Some("output exceeds the declared size, or input truncated"),
+        lz::LZMA_MEMLIMIT_ERROR | lz::LZMA_MEM_ERROR => Some("out of memory"),
+        _ => Some("liblzma error"),
+    };
+    if let Some(what) = what {
+        bail!("xz decode: {what} (lzma_ret {ret})");
+    }
+    ensure!(
+        out_pos == orig,
+        "xz decoded size mismatch ({out_pos} vs {orig})"
+    );
+    // SAFETY: liblzma initialized the first `out_pos` (== orig) bytes.
+    unsafe { out.set_len(out_pos) };
+    Ok(out)
 }
 
 #[cfg(target_os = "macos")]
@@ -621,7 +672,7 @@ impl<'a> Envelope<'a> {
                             let decoded = if data.len() as u32 == *orig {
                                 Cow::Borrowed(*data)
                             } else {
-                                match decode_xz(data, *orig as usize, dec) {
+                                match decode_xz(data, *orig as usize, dec, true) {
                                     Ok(d) => Cow::Owned(d),
                                     Err(_) => {
                                         failed.push(*idx);
@@ -703,4 +754,46 @@ fn try_parse_pairs(blob: &[u8], inclusive: bool) -> Option<Vec<(String, Vec<u8>)
         pos += plen;
     }
     (pos == blob.len() && !out.is_empty() || blob.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn xz(data: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut v = Vec::new();
+        // Default check for this encoder: CRC64.
+        liblzma::read::XzEncoder::new(data, 6)
+            .read_to_end(&mut v)
+            .unwrap();
+        v
+    }
+
+    #[test]
+    fn liblzma_one_shot_decode() {
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let n = data.len();
+        let enc = xz(&data);
+        let dec = |b: &[u8], orig, ignore| decode_xz(b, orig, XzDecoder::Liblzma, ignore);
+        for ignore in [false, true] {
+            assert_eq!(dec(&enc, n, ignore).unwrap(), data);
+        }
+        // Declared size must match exactly, in both directions.
+        assert!(dec(&enc, n - 1, true).is_err(), "over-long stream");
+        assert!(dec(&enc, n + 1, true).is_err(), "short stream");
+        assert!(dec(&enc[..enc.len() / 2], n, true).is_err(), "truncated");
+
+        // Flip a bit of the stored CRC64: caught when the xz check is the
+        // only one, skipped when the caller's SHA-256 will cover the bytes.
+        let crc = unsafe { liblzma_sys::lzma_crc64(data.as_ptr(), data.len(), 0) }.to_le_bytes();
+        let at = enc
+            .windows(8)
+            .position(|w| w == crc)
+            .expect("CRC64 stored in stream");
+        let mut bad = enc.clone();
+        bad[at] ^= 1;
+        assert!(dec(&bad, n, false).is_err(), "check enforced");
+        assert_eq!(dec(&bad, n, true).unwrap(), data, "check skipped");
+    }
 }

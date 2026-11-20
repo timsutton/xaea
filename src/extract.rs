@@ -622,7 +622,7 @@ fn decode_segment(
         Arc::from(read_pread(fh, data_off, comp as usize)?.into_boxed_slice())
     } else {
         let raw = read_pread(fh, data_off, comp as usize)?;
-        let out = crate::envelope::decode_xz(&raw, orig as usize, dec)?;
+        let out = crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())?;
         Arc::from(out.into_boxed_slice())
     };
     if let Some(want) = expect {

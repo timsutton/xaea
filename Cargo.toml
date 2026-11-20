@@ -22,6 +22,9 @@ libc = "0.2"
 # Vendored xz-utils (5.8.x), statically linked. The maintained successor of
 # xz2/lzma-sys, whose bundled xz 5.2.5 decoded ~23% slower.
 liblzma = { version = "0.4", features = ["static"] }
+# Direct FFI for the one-shot lzma_stream_buffer_decode (not wrapped by
+# liblzma); same crate liblzma itself builds on.
+liblzma-sys = { version = "0.4", features = ["static"] }
 signature = "3"
 ecdsa = "0.17"
 # Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;

@@ -172,6 +172,14 @@ backpressure ~1.5 s, inline decode checksums ~0.5–1 s, final-pass drain
 - **per-segment SHA-256 rides inline on the decoder threads** —
   essentially free next to LZMA, and it means no segment's bytes reach
   the filesystem before its own check.
+- **…which makes xz's own check redundant**, so verified decodes pass
+  `LZMA_IGNORE_CHECK` to liblzma (the .xz CRC64 covers the same decoded
+  bytes the SHA-256 does). Microbenchmark, 16 MiB CRC64 segment, x86-64:
+  110 ms → 93 ms together with the switch to one-shot
+  `lzma_stream_buffer_decode` (no `BufReader` input copy, no zero-filled
+  output). With `--no-verify` the xz check stays on: it is then the only
+  integrity check. The saving assumes Apple's segments carry CRC64 (check
+  type: low nibble of byte offset 7 of each segment's stream header = 0x4).
 
 Net: verification costs **1.6 s of a 10.6 s run** (10.6 vs 9.0), which
 is why it's the default.
