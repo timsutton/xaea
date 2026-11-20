@@ -32,14 +32,17 @@ builds:
       - aarch64-unknown-linux-gnu
 
 # Merge the two darwin builds with lipo into a single fat binary, published as
-# xaea_<version>_darwin_all.tar.gz in place of the per-arch darwin archives.
+# xaea_<version>_darwin_universal.tar.gz in place of the per-arch darwin archives.
 universal_binaries:
   - ids: [darwin]
     replace: true
 
 archives:
-  - # Default name template (xaea_<version>_<os>_<arch>.tar.gz); ship the
-    # license and top-level docs alongside the binary.
+  - # Default name template (xaea_<version>_<os>_<arch>.tar.gz) except that the
+    # lipo-merged macOS binary is "universal" rather than GoReleaser's "all".
+    # Ship the license and top-level docs alongside the binary.
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
     files:
       - LICENSE
       - README.md

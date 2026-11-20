@@ -23,7 +23,7 @@ alongside the binary, plus a `checksums.txt`:
 
 ```sh
 # x86_64 Linux, as an example — swap the version and linux_amd64 for
-# linux_arm64 or darwin_all (universal macOS) as needed (Linux assets need
+# linux_arm64 or darwin_universal as needed (Linux assets need
 # glibc ≥ 2.30: Ubuntu 20.04+, Debian 11+, RHEL 9+)
 curl -fsSL https://github.com/timsutton/xaea/releases/download/v0.1.0/xaea_0.1.0_linux_amd64.tar.gz | tar xz
 ./xaea --help
