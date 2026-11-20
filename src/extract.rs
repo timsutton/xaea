@@ -257,20 +257,33 @@ fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)]) -> Result<()> {
             acc.extend_from_slice(name.to_lowercase().as_bytes());
         }
         let full = root.join(&**path);
-        if let Some(p) = full.parent() {
-            std::fs::create_dir_all(p).with_context(|| format!("mkdir -p {}", p.display()))?;
+        // symlink(2) first: in the common case the parent exists and the
+        // name is free, so this is the only syscall. This pass runs on one
+        // thread after every writer has drained, so each extra syscall here
+        // (it used to be mkdir + stat + unlink + symlink) is pure wall time.
+        let mut r = symlink(target.as_ref(), &full);
+        if matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            if let Some(p) = full.parent() {
+                std::fs::create_dir_all(p).with_context(|| format!("mkdir -p {}", p.display()))?;
+            }
+            r = symlink(target.as_ref(), &full);
         }
-        match std::fs::remove_file(&full) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            // EISDIR etc.: a real directory (or file) we cannot replace lives
-            // here — in a well-formed archive this cannot happen; bail loudly
-            // rather than silently keep the occupant (a planted `x/` dir
-            // against a link record is itself suspicious).
-            Err(e) => Err(e).with_context(|| format!("replace {} with symlink", full.display()))?,
+        if matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+            match std::fs::remove_file(&full) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // EISDIR etc.: a real directory (or file) we cannot replace
+                // lives here — in a well-formed archive this cannot happen;
+                // bail loudly rather than silently keep the occupant (a
+                // planted `x/` dir against a link record is itself
+                // suspicious).
+                Err(e) => {
+                    Err(e).with_context(|| format!("replace {} with symlink", full.display()))?
+                }
+            }
+            r = symlink(target.as_ref(), &full);
         }
-        symlink(target.as_ref(), &full)
-            .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
+        r.with_context(|| format!("symlink {} -> {}", full.display(), target))?;
         created.insert(lower(path));
     }
     Ok(())
@@ -905,6 +918,42 @@ mod tests {
         // Link targets stay verbatim, but absolute ones are rejected.
         assert_eq!(link_target(b"a/../../b").unwrap(), "a/../../b");
         assert!(link_target(b"/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn link_pass_fallbacks() {
+        let root = std::env::temp_dir().join(format!("xaea-linkpass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        std::fs::write(root.join("d/occupied"), b"x").unwrap();
+        std::fs::create_dir(root.join("d/isdir")).unwrap();
+        let l = |p: &str, t: &str| (PathBuf::from(p).into_boxed_path(), Box::<str>::from(t));
+
+        // Fast path, missing parent, and a file occupying the name.
+        link_pass(
+            &root,
+            &[
+                l("d/plain", "t1"),
+                l("new/deeper/link", "t2"),
+                l("d/occupied", "t3"),
+            ],
+        )
+        .unwrap();
+        for (p, t) in [
+            ("d/plain", "t1"),
+            ("new/deeper/link", "t2"),
+            ("d/occupied", "t3"),
+        ] {
+            assert_eq!(std::fs::read_link(root.join(p)).unwrap(), Path::new(t));
+        }
+
+        // A real directory in the way is refused, not replaced.
+        assert!(link_pass(&root, &[l("d/isdir", "t4")]).is_err());
+        assert!(root.join("d/isdir").is_dir());
+
+        // Traversing a symlink created earlier in the same pass is refused.
+        assert!(link_pass(&root, &[l("x", "."), l("x/y", "t5")]).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
