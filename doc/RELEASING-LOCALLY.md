@@ -21,7 +21,7 @@ cross-linked with zig through `cargo-zigbuild`.
 
 ```sh
 goreleaser release --snapshot --clean --skip=publish
-ls dist/*.tar.gz   # darwin + linux, amd64 + arm64, and checksums.txt
+ls dist/*.tar.gz   # darwin (universal) + linux amd64 + arm64, and checksums.txt
 ```
 
 `--snapshot` versions the archives `<version>-SNAPSHOT-<sha>` and skips the

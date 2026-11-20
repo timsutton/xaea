@@ -7,7 +7,8 @@ version: 2
 
 builds:
   # Run on a macOS runner. The darwin targets use plain `cargo build` (the
-  # Apple SDK handles both architectures natively); zigbuild is for the
+  # Apple SDK handles both architectures natively) and are merged into one
+  # universal binary by `universal_binaries` below; zigbuild is for the
   # Linux targets only, giving a consistent glibc floor (2.30, measured).
   - id: darwin
     builder: rust
@@ -30,9 +31,18 @@ builds:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
 
+# Merge the two darwin builds with lipo into a single fat binary, published as
+# xaea_<version>_darwin_universal.tar.gz in place of the per-arch darwin archives.
+universal_binaries:
+  - ids: [darwin]
+    replace: true
+
 archives:
-  - # Default name template (xaea_<version>_<os>_<arch>.tar.gz); ship the
-    # license and top-level docs alongside the binary.
+  - # Default name template (xaea_<version>_<os>_<arch>.tar.gz) except that the
+    # lipo-merged macOS binary is "universal" rather than GoReleaser's "all".
+    # Ship the license and top-level docs alongside the binary.
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
     files:
       - LICENSE
       - README.md
