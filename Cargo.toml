@@ -1,6 +1,6 @@
 [package]
 name = "xaea"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 # RustCrypto floor: rsa 0.10 / crypto-bigint >=0.7.6 (the patched versions for
 # RUSTSEC-2023-0071 / RUSTSEC-2026-0387) both declare 1.87.

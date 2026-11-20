@@ -5,7 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
-## Unreleased
+## 0.1.2 - 2026-11-19
+
+### Changed
+
+* Universal binary release for macOS.
 
 ## 0.1.1 - 2026-11-19
 
