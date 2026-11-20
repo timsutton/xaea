@@ -71,7 +71,7 @@ concentrated the work).
   *only* dispatches work. No syscalls here — that's the whole point (see
   the one-fact section).
 - **Writer threads (default 6)** execute every syscall
-  (`mkdir`/`open`/`chmod`/`symlink`/`pwrite`/quarantine) fed by
+  (`mkdir`/`open`/`chmod`/`symlink`/`pwrite`) fed by
   **per-writer ordered `sync_channel(32)`s**. A file's records all route
   to one writer by object sequence, so each writer does contiguous
   appends to one open file at a time (`Cur` tracks the current file) —
