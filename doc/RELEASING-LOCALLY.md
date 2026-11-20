@@ -29,18 +29,6 @@ tag requirement; `dist/` is git-ignored.
 
 To build just one platform: `goreleaser build --snapshot --clean --single-target`.
 
-## Gotcha: Homebrew's rustc shadows rustup's
-
-If Rust is installed from Homebrew as well as rustup, `rustc` on `PATH` may
-be Homebrew's, which has no cross-compilation targets. The build then fails
-with `can't find crate for core` ("the `x86_64-apple-darwin` target may not
-be installed"). Put rustup's toolchain first:
-
-```sh
-PATH="$(dirname "$(rustup which rustc)"):$PATH" \
-  goreleaser release --snapshot --clean --skip=publish
-```
-
 CI pins the compiler (`RUST_VERSION` in the workflows); a local run uses
 whatever rustup's active toolchain is, so it's for checking the pipeline,
 not for reproducing a published binary.
