@@ -5,7 +5,8 @@ name: Release
 # darwin targets natively, the Linux ones zig-cross-linked.
 #
 # To cut a release: bump `version` in Cargo.toml, commit, then
-# `git tag vX.Y.Z && git push origin vX.Y.Z`.
+# `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses to publish
+# unless the tag matches the version in Cargo.toml and Cargo.lock.
 
 on:
   push:
@@ -41,6 +42,25 @@ jobs:
           # Full history — GoReleaser generates the release notes from the
           # commit log between tags.
           fetch-depth: 0
+      # A real release must be cut from a vX.Y.Z tag that matches the crate
+      # version in both Cargo.toml and Cargo.lock; otherwise the binaries would
+      # report a different version than the release they're attached to.
+      # Dry runs (snapshot) skip this.
+      - name: Verify tag matches crate version
+        if: ${{ !inputs.snapshot }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Non-dry-run releases must run from a tag, not '$GITHUB_REF_NAME'"
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          toml_version=$(awk -F'"' '/^version *=/ {print $2; exit}' Cargo.toml)
+          lock_version=$(awk -F'"' '/^name = "xaea"$/ {getline; print $2; exit}' Cargo.lock)
+          echo "tag=$tag_version Cargo.toml=$toml_version Cargo.lock=$lock_version"
+          if [ "$tag_version" != "$toml_version" ] || [ "$tag_version" != "$lock_version" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match Cargo.toml ($toml_version) / Cargo.lock ($lock_version)"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
