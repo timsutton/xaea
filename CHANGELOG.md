@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+
+* One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
+  `inspect`.
+
 ### Changed
 
 * **CLI:** `extract` now takes the output directory as an optional

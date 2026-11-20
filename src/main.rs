@@ -20,6 +20,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Parse and (optionally) verify an AEA file
+    #[command(visible_alias = "i")]
     Inspect {
         file: PathBuf,
         /// Machine-readable output
@@ -38,6 +39,7 @@ enum Commands {
         decoder: XzDecoder,
     },
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
+    #[command(visible_alias = "x")]
     Extract {
         file: PathBuf,
         /// Directory to extract into (created if missing; default: the

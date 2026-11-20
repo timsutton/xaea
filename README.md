@@ -75,6 +75,9 @@ before writing anything if the archive's top-level entry (e.g. `Xcode.app`)
 already exists there, so it never merges into or overwrites an existing app.
 `--dry-run` runs the same check.
 
+Subcommands have one-letter shorthands: `xaea x …` is `xaea extract …`
+and `xaea i …` is `xaea inspect …`.
+
 Progress: press **Ctrl-T** (`SIGINFO`) while extracting for a one-line
 status report — segments, payload written, rate, file count. On Linux,
 which has no `SIGINFO`, send `SIGUSR1` instead.
