@@ -10,6 +10,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
 
+* `extract --readahead N`: decoded segments buffered ahead of the parser.
+  The default rises from `decoders + 4` to 160, which lets decoders run
+  ahead during the filesystem-bound first half of an Xcode archive: full
+  extract −9% on M3 Max and −7% on M4 Max, at ~1.5–2 GiB more peak memory
+  (`--readahead 19` restores the old footprint).
+* `profile` cargo feature: per-stage timing probes (`XAEA_STATS` breakdown,
+  `XAEA_TL` timeline). Compiles to nothing when off.
+
 ### Changed
 
 * **CLI:** `extract` now takes the output directory as an optional

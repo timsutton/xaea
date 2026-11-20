@@ -44,6 +44,7 @@
 
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::envelope::{Envelope, XzDecoder};
+use crate::prof::{self, C, K};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -62,11 +63,22 @@ pub struct Stats {
     pub bytes: u64,
 }
 
+/// Default decoder→parser channel capacity (see `--readahead`). The old
+/// `decoders + 4` kept decoders from running ahead during the file-heavy,
+/// writer-bound first half of an Xcode archive; 160 lets them bank the
+/// large-file tail instead. Full extract, Xcode 27.3 b2: M3 Max 9.0 → 8.2 s
+/// (−9%, peak RSS 3.2 → 5.3 GiB); M4 Max 6.55 → 6.10 s (−7%, 3.2 → 4.8 GiB).
+/// Beyond ~160 the M4 gains nothing more; the M3 keeps improving slowly
+/// (640: 7.9 s, 6.3 GiB) but at a steep memory price.
+pub const DEFAULT_READAHEAD: usize = 160;
+
 pub struct Opts {
     pub out: PathBuf,
     pub dry: bool,
     pub decoders: usize,
     pub writers: usize,
+    /// Capacity of the decoder→parser result channel, in segments.
+    pub readahead: usize,
     /// Reserve each file's full length (fcntl/posix_fallocate) before the
     /// first write so APFS doesn't grow extents mid-blob.
     pub prealloc: bool,
@@ -293,7 +305,7 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
     // Open file being written; closed implicitly when the next Open (or the
     // channel end) replaces/drops it.
     let mut cur: Option<(u64, File)> = None;
-    while let Ok(w) = rx.recv() {
+    while let Ok(w) = prof::time(C::WRecv, || rx.recv()) {
         match w {
             Work::Mkdir { path } => {
                 let full = root.join(path);
@@ -301,24 +313,34 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 // do just that when it succeeds, but it is the fallback for
                 // the rare cases (parent not created yet, or a file writer
                 // already made this dir on demand: EEXIST + stat).
-                if std::fs::create_dir(&full).is_err() {
-                    std::fs::create_dir_all(&full)
-                        .with_context(|| format!("mkdir {}", full.display()))?;
-                }
+                prof::time(C::WMkdir, || -> Result<()> {
+                    if std::fs::create_dir(&full).is_err() {
+                        std::fs::create_dir_all(&full)
+                            .with_context(|| format!("mkdir {}", full.display()))?;
+                    }
+                    Ok(())
+                })?;
             }
             Work::Flush(ack) => {
-                cur = None; // close the open fd before acknowledging
+                prof::time(C::WClose, || cur = None); // close the open fd before acknowledging
                 let _ = ack.send(());
             }
-            Work::LinkPass(links) => link_pass(&root, &links)?,
+            Work::LinkPass(links) => prof::time(C::WLink, || link_pass(&root, &links))?,
             Work::DirModes(modes) => {
-                for (path, mode) in modes {
-                    let full = root.join(path);
-                    std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("chmod {}", full.display()))?;
-                }
+                prof::time(C::WDirmode, || -> Result<()> {
+                    for (path, mode) in modes {
+                        let full = root.join(path);
+                        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(mode))
+                            .with_context(|| format!("chmod {}", full.display()))?;
+                    }
+                    Ok(())
+                })?;
             }
             Work::Open { seq, path, mode } => {
+                // Close the previous file here (rather than when `cur` is
+                // overwritten below) so the probe can attribute it.
+                prof::time(C::WClose, || cur = None);
+                prof::count(K::Opens, 1);
                 let full = root.join(path);
                 let open = |p: &Path| {
                     OpenOptions::new()
@@ -333,14 +355,14 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 // writer that hasn't run it yet. An unconditional
                 // create_dir_all here cost two syscalls per file — mkdir
                 // (EEXIST) + stat — about 250k across an Xcode tree.
-                let f = match open(&full) {
+                let f = match prof::time(C::WOpen, || open(&full)) {
                     Ok(f) => Ok(f),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         if let Some(p) = full.parent() {
-                            std::fs::create_dir_all(p)
+                            prof::time(C::WMkp, || std::fs::create_dir_all(p))
                                 .with_context(|| format!("mkdir -p {}", p.display()))?;
                         }
-                        open(&full)
+                        prof::time(C::WOpen, || open(&full))
                     }
                     Err(e) => Err(e),
                 }
@@ -348,8 +370,10 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 // Skip fchmod when open(2) already produced the mode via the
                 // umask default — see create_defaults() for the rationale.
                 if mode != file_default {
-                    f.set_permissions(std::fs::Permissions::from_mode(mode))
-                        .with_context(|| format!("fchmod {}", full.display()))?;
+                    prof::time(C::WFchmod, || {
+                        f.set_permissions(std::fs::Permissions::from_mode(mode))
+                    })
+                    .with_context(|| format!("fchmod {}", full.display()))?;
                 }
                 cur = Some((seq, f));
             }
@@ -367,7 +391,9 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 }
                 let mut b = piece.bytes();
                 while !b.is_empty() {
-                    let n = f.write_at(b, off).context("pwrite")?;
+                    let n = prof::time(C::WPwrite, || f.write_at(b, off)).context("pwrite")?;
+                    prof::count(K::Pwrites, 1);
+                    prof::count(K::PwriteBytes, n as u64);
                     ensure!(n > 0, "pwrite made no progress");
                     off += n as u64;
                     b = &b[n..];
@@ -460,8 +486,7 @@ impl DispatchSink {
     }
 
     fn send(&self, w: usize, work: Work) -> Result<()> {
-        self.txs[w]
-            .send(work)
+        prof::time(C::PSend, || self.txs[w].send(work))
             .context("writer channel closed (writer died?)")
     }
 }
@@ -639,12 +664,14 @@ fn decode_segment(
         // SAFETY: `fill` initialized all `len` bytes (zeroed, then read).
         unsafe { crate::envelope::segbuf_filled(len, fill)? }
     } else {
-        let raw = read_pread(fh, data_off, comp as usize)?;
-        crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())?
+        let raw = prof::time(C::DPread, || read_pread(fh, data_off, comp as usize))?;
+        prof::time(C::DDecode, || {
+            crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())
+        })?
     };
     if let Some(want) = expect {
         use sha2::{Digest, Sha256};
-        let got: [u8; 32] = Sha256::digest(&buf[..]).into();
+        let got: [u8; 32] = prof::time(C::DSha, || Sha256::digest(&buf[..]).into());
         ensure!(
             got == want,
             "checksum mismatch for segment {index} (corrupt or tampered archive)"
@@ -763,8 +790,9 @@ fn extract_body(
     // Writers: per-writer ordered channels.
     let (file_default, dir_default) = create_defaults();
     let nw = opts.writers.max(1);
-    let (wtx, wrx): (Vec<SyncSender<Work>>, Vec<Receiver<Work>>) =
-        (0..nw).map(|_| sync_channel::<Work>(32)).unzip();
+    let (wtx, wrx): (Vec<SyncSender<Work>>, Vec<Receiver<Work>>) = (0..nw)
+        .map(|_| sync_channel::<Work>(prof::depth("XAEA_WQ", 32)))
+        .unzip();
     let writers: Vec<_> = wrx
         .into_iter()
         .map(|rx| {
@@ -777,7 +805,7 @@ fn extract_body(
     // bounded channel (results carry errors so the parser can surface them).
     let nd = opts.decoders.max(1);
     let decoder = opts.decoder;
-    let (dtx, drx) = sync_channel::<Result<(usize, Arc<[u8]>)>>(nd + 4);
+    let (dtx, drx) = sync_channel::<Result<(usize, Arc<[u8]>)>>(opts.readahead.max(1));
     let next = Arc::new(AtomicUsize::new(0));
     let mut decoders = Vec::new();
     for _ in 0..nd {
@@ -792,7 +820,8 @@ fn extract_body(
                 let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i, decoder)
                     .map(|b| (i, b))
                     .with_context(|| format!("decode segment {i}"));
-                if dtx.send(r).is_err() {
+                prof::count(K::Segs, 1);
+                if prof::time(C::DSend, || dtx.send(r)).is_err() {
                     break; // parser is gone (error path)
                 }
             }
@@ -800,6 +829,10 @@ fn extract_body(
     }
     drop(dtx);
 
+    let _timeline = {
+        let p = prog.clone();
+        prof::timeline(prog.started, move || p.seg_done.load(Relaxed))
+    };
     let mut sink = DispatchSink {
         dry: opts.dry,
         root: opts.out.clone(),
@@ -824,12 +857,12 @@ fn extract_body(
     let mut pending: HashMap<usize, Arc<[u8]>> = HashMap::new();
     let mut expect = 0usize;
     while expect < nseg {
-        let (i, buf) = drx.recv().context("decoder thread died")??;
+        let (i, buf) = prof::time(C::PRecv, || drx.recv()).context("decoder thread died")??;
         if i == expect {
-            stream.feed(buf)?;
+            prof::time(C::PFeed, || stream.feed(buf))?;
             expect += 1;
             while let Some(b) = pending.remove(&expect) {
-                stream.feed(b)?;
+                prof::time(C::PFeed, || stream.feed(b))?;
                 expect += 1;
             }
             prog.seg_done.store(expect, Relaxed);
@@ -861,12 +894,14 @@ fn extract_body(
     // alone proves nothing about the others), then symlinks (before any
     // restrictive dir modes), then deferred directory modes.
     if !opts.dry {
+        let t_flush = Instant::now();
         for w in 0..sink.txs.len() {
             let (atx, arx) = sync_channel::<()>(1);
             sink.send(w, Work::Flush(atx))?;
             arx.recv()
                 .map_err(|_| anyhow::anyhow!("writer {w} died mid-flush"))?;
         }
+        prof::add_since(C::WFlush, t_flush);
         let links = std::mem::take(&mut sink.links);
         sink.send(0, Work::LinkPass(links))?;
         let modes: Vec<(Box<Path>, u32)> = sink
@@ -902,6 +937,7 @@ fn extract_body(
             "[stats] parse+dispatch done at {parser_done:.1}s; writer drain +{:.1}s; total {total:.1}s",
             total - parser_done
         );
+        prof::report();
     }
     maybe_print_status(&prog, nseg);
     end_status_line();

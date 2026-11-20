@@ -95,7 +95,7 @@ concentrated the work).
 |---|---|---|
 | decoders `--jobs` | cores−1 (min 2) | writers are I/O-blocked, so decoders may oversubscribe CPU: A/B 8.42/8.94 s vs 9.09/9.44 s for cores (commit `39fef48`) |
 | writers `--writers` | 6 | >4 writers *hurt* before the syscall offload (contention); after offloading syscalls onto them, 6 won the grid (j12w6 = 8.80 s) |
-| decoder channel | `nd + 4` | small bound keeps memory pinned without starving reorder |
+| decoder channel `--readahead` | 160 | was `nd + 4` (19), which stopped decoders running ahead during the writer-bound first half of the archive; 160 gives −9% (M3 Max) / −7% (M4 Max) wall for +1.5–2 GiB peak RSS. See "Profiling build" below |
 | writer queue | 32 per writer | queue depth 12 cost **~1.5 s** of parser throughput via backpressure; 32 restored in the hardening batch. Worst case pinned memory: writers × 32 × segment size ≈ **3 GiB** — deliberate trade, documented in `extract.rs` |
 
 Raw grid/A-B logs lived in `/tmp/bench_{grid,ab,g2,jobs}.log`
@@ -201,6 +201,85 @@ offload **9.8 s** → jobs/writers grid **8.80 s** → cores−1 A/B **8.4 s**
 MACs → **10.6 s verified / 9.0 s unverified** at v0.1.0. Every step was
 re-proven byte-identical (137,459 paths, zero diffs, permission modes
 included) against the oracle tree with `scripts/verify.sh`.
+
+## Profiling build (`--features profile`)
+
+```sh
+cargo build --release --features profile
+XAEA_STATS=1 ./target/release/xaea extract FILE OUT   # per-stage breakdown
+XAEA_TL=1    ./target/release/xaea extract FILE OUT   # 250 ms timeline
+XAEA_WQ=64   ./target/release/xaea extract FILE OUT   # writer queue depth
+```
+
+Without the feature the probes (`src/prof.rs`) are empty inline shims.
+`XAEA_STATS` then adds summed-over-threads seconds for: decoder
+pread / lzma / sha256 / send-blocked; parser recv-wait / feed /
+send-blocked; writer idle / mkdir / open / close / fchmod / pwrite and
+the final passes. `XAEA_TL` prints, per 250 ms, segments decoded and
+parsed, opens/s, MiB/s written, and thread-equivalents blocked/busy.
+For kernel-side CPU, `xctrace record --template 'Time Profiler' --launch
+-- xaea extract …` plus `scripts/prof_trace.py` (aggregates an exported
+`time-profile` table per thread role). `scripts/fs_create_bench.rs` is
+the raw `open(O_CREAT)`/`close` microbenchmark referenced below.
+
+### What the profile showed (Xcode 27.3 b2, M3 Max, full extract ≈ 9 s)
+
+- CPU: ~70 s user (LZMA 91%, ~8% of that `memmove` out of liblzma's
+  dictionary; SHA-256 ≈ 5 s; segment MACs ≈ 1 s) + ~23 s sys, almost all
+  writers. A dry run is the ~5 s decode floor (≈14 busy cores).
+- Writer kernel time: `open` 51%, `pwrite` 22%, `mkdir` 12%, `close`
+  9%, symlink 3%. A single writer needs ~14.8 s of sys; 8 writers burn
+  ~26.8 s for no extra throughput past ~4 writers — contention, not work.
+- The run has two phases. First ~5 s (≈110k files): filesystem-bound at
+  ≈25k opens/s, writers saturated, parser blocked on writer queues ~97%
+  of the time, decoders idle against a 19-segment window. Then ~3 s of
+  large files: decode-bound, writers mostly idle. They ran back to back;
+  deeper read-ahead overlaps them (hence `--readahead`).
+
+Read-ahead sweep (full extract, 6 runs):
+
+| `--readahead` | M3 Max wall | M3 peak RSS | M4 Max wall | M4 peak RSS |
+|---|---|---|---|---|
+| 19 (old) | 9.00 s | 3.2 GiB | 6.55 s | 3.2 GiB |
+| 64 | 8.73 s | 3.9 GiB | 6.32 s | 3.9 GiB |
+| 160 (default) | 8.22 s | 5.3 GiB | 6.10 s | 4.8 GiB |
+| 640 | 7.89 s | 6.3 GiB | 6.15 s | 4.8 GiB |
+
+M4 Max vs 0.1.3 for the PR as a whole: `--dry-run` 4.63 → 4.43 s (−4.4%),
+full extract 6.99 → 6.61 s (−5.4%), before the read-ahead change.
+
+M4 Max reference (16c, same fixture, 5–8 runs): Apple's
+`archiveutil extractXcodeAEA` 38.87 ± 0.19 s (it takes no output dir and
+extracts into the cwd) against xaea 0.1.3 6.99 s, this PR 6.61 s, and
+this PR with `--readahead 160` 6.09 s — ≈6.4× faster than Apple's tool.
+Note archiveutil's output is smaller on disk (3.9 GiB `du` vs the 9.7 GiB
+payload), i.e. it appears to apply transparent APFS compression, which
+xaea does not; the comparison is wall time to a complete tree, not
+identical work. The probes cost nothing in default builds: new build with
+`--readahead 19` vs the pre-probe binary, A/B in both orders, 6.61–6.65 s
+vs 6.65–6.67 s (σ ≈ 0.05–0.1 s).
+
+### Tried and rejected in this round
+
+- **Closing files on a dedicated thread** (1–2 closers): no gain (9.25 /
+  9.24 / 9.40 s) — `close` serializes on the same filesystem locks.
+- **Deeper writer queues** (128): no gain.
+- **`openat` against a cached dir fd, or `O_EXCL` instead of `O_TRUNC`**:
+  identical to full-path `open` in the microbenchmark (≈65k creates/s
+  ceiling at 6 threads). Path walking is not the cost.
+- **Routing files to writers by parent directory** (or in chunks of N
+  consecutive files): `open` gets cheaper (16.5 → 10.1 s summed, sys
+  23.6 → 18.3 s) — same-directory creates do contend — but big
+  directories pin one writer and wall time gets worse (12.6 s pure;
+  chunks of 2–32: 9.3–10.4 s vs 9.4 s round-robin, i.e. no gain). A
+  least-loaded variant was not tried.
+- **More writers**: see above; 4–6 is the knee.
+
+### Not yet tried
+
+Parallelizing the final symlink pass (0.6–0.7 s serial tail; the
+traversal check can run in the parser, creation could fan out), and
+avoiding liblzma's dictionary→output copy (~8% of decode CPU).
 
 ## Re-measuring
 

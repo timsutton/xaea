@@ -32,6 +32,11 @@ rsa = { version = "0.10", default-features = false, features = [
 ] }
 serde_json = "1"
 
+[features]
+# Pipeline timing probes (XAEA_STATS breakdown, XAEA_TL timeline, XAEA_DQ/XAEA_WQ
+# queue overrides). Compiles to nothing when off; see src/prof.rs.
+profile = []
+
 [dev-dependencies]
 # Unit tests only: builds .xz streams to feed the decoder.
 liblzma = { version = "0.4", features = ["static"] }
