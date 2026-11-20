@@ -180,6 +180,16 @@ whole pipeline without publishing.
 To run the same build on your own machine, see
 [RELEASING-LOCALLY.md](doc/RELEASING-LOCALLY.md).
 
+The macOS binaries are signed with a Developer ID Application certificate
+and notarized by GoReleaser (`notarize` in `.goreleaser.yaml`); the workflow
+then checks the signatures of the shipped archive
+(`scripts/verify-macos-signature.sh`). A real release needs
+five repository secrets — `MACOS_SIGN_P12` (base64 `.p12`),
+`MACOS_SIGN_PASSWORD`, `MACOS_NOTARY_ISSUER_ID`, `MACOS_NOTARY_KEY_ID` and
+`MACOS_NOTARY_KEY` (base64 App Store Connect `.p8`) — and fails without them.
+Snapshot runs skip signing. A bare binary can't be stapled, so Gatekeeper
+checks the notarization ticket online the first time a quarantined copy runs.
+
 Before it runs, the workflow installs
 [`cosign`](https://github.com/sigstore/cosign-installer), which makes
 goreleaser-action verify the GoReleaser binary it downloads — both its
