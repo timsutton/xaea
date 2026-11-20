@@ -63,14 +63,61 @@ pub struct Stats {
     pub bytes: u64,
 }
 
-/// Default decoder→parser channel capacity (see `--readahead`). The old
-/// `decoders + 4` kept decoders from running ahead during the file-heavy,
-/// writer-bound first half of an Xcode archive; 160 lets them bank the
-/// large-file tail instead. Full extract, Xcode 27.3 b2: M3 Max 9.0 → 8.2 s
-/// (−9%, peak RSS 3.2 → 5.3 GiB); M4 Max 6.55 → 6.10 s (−7%, 3.2 → 4.8 GiB).
-/// Beyond ~160 the M4 gains nothing more; the M3 keeps improving slowly
-/// (640: 7.9 s, 6.3 GiB) but at a steep memory price.
-pub const DEFAULT_READAHEAD: usize = 160;
+/// Upper bound for the default `--readahead` (decoded segments buffered
+/// between the decoders and the parser). The old default was `decoders + 4`,
+/// which kept decoders from running ahead during the file-heavy,
+/// writer-bound first half of an Xcode archive; a deeper window lets them
+/// bank the large-file tail instead. Full extract, Xcode 27.3 b2: at 160, M3
+/// Max 9.0 → 8.2 s (−9%, peak RSS 3.2 → 5.3 GiB); M4 Max 6.55 → 6.10 s (−7%,
+/// 3.2 → 4.8 GiB). Beyond ~160 the M4 gains nothing and the M3 only slowly
+/// (640: 7.9 s, 6.3 GiB) at a steep memory price.
+pub const MAX_READAHEAD: usize = 160;
+
+/// Default `--readahead`: as deep as [`MAX_READAHEAD`], but never more than
+/// 1/8 of physical RAM worth of segments, and never below the old
+/// `decoders + 4`. With unknown RAM, stay at that floor. On a 16 GB Mac this
+/// is 128 segments (2 GiB of buffers); from 32 GB up it is the full 160.
+pub fn default_readahead(ram: Option<u64>, seg_bytes: usize, decoders: usize) -> usize {
+    let floor = decoders + 4;
+    let Some(ram) = ram else { return floor };
+    let fit = ((ram / 8) / seg_bytes.max(1) as u64) as usize;
+    fit.min(MAX_READAHEAD).max(floor)
+}
+
+/// Physical memory in bytes, if the platform tells us.
+pub fn physical_ram() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut v: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: `v`/`len` describe a valid u64 out-buffer for hw.memsize.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&raw mut v).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (rc == 0 && v > 0).then_some(v)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: sysconf has no preconditions.
+        let (pages, size) = unsafe {
+            (
+                libc::sysconf(libc::_SC_PHYS_PAGES),
+                libc::sysconf(libc::_SC_PAGESIZE),
+            )
+        };
+        (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
 
 pub struct Opts {
     pub out: PathBuf,
@@ -950,6 +997,23 @@ fn extract_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readahead_scales_with_ram() {
+        const GIB: u64 = 1 << 30;
+        let seg = 16 << 20;
+        // 8 GB -> 64, 16 GB -> 128, 32 GB and up -> the 160 cap.
+        assert_eq!(default_readahead(Some(8 * GIB), seg, 15), 64);
+        assert_eq!(default_readahead(Some(16 * GIB), seg, 15), 128);
+        assert_eq!(default_readahead(Some(32 * GIB), seg, 15), 160);
+        assert_eq!(default_readahead(Some(128 * GIB), seg, 15), 160);
+        // Never below the old decoders + 4, whatever the RAM says.
+        assert_eq!(default_readahead(Some(GIB), seg, 15), 19);
+        assert_eq!(default_readahead(None, seg, 15), 19);
+        // Absurdly many decoders must not panic the clamp.
+        assert_eq!(default_readahead(Some(128 * GIB), seg, 400), 404);
+        assert_eq!(default_readahead(Some(8 * GIB), 0, 2), 160);
+    }
 
     #[test]
     fn clamp_policy() {

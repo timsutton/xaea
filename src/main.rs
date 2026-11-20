@@ -68,10 +68,11 @@ enum Commands {
         #[arg(short = 'w', long)]
         writers: Option<usize>,
         /// Decoded segments (~16 MiB each) buffered ahead of the parser
-        /// (default: 160). The start of an Xcode archive is file-heavy and
-        /// filesystem-bound; a deep buffer lets decoders run ahead meanwhile
-        /// so the large-file tail is not decode-bound afterwards. Costs
-        /// memory (~+2 GiB peak vs 19); lower it on small machines.
+        /// (default: 1/8 of RAM worth, at most 160, at least decoders+4).
+        /// The start of an Xcode archive is file-heavy and filesystem-bound;
+        /// a deep buffer lets decoders run ahead meanwhile so the large-file
+        /// tail is not decode-bound afterwards. Costs memory (up to ~+2 GiB
+        /// peak vs 19); lower it on small machines.
         #[arg(long)]
         readahead: Option<usize>,
         /// Pre-reserve each file's extents before writing (helps on some
@@ -314,12 +315,21 @@ fn extract_cmd(
     // fs syscalls, so decoders can safely oversubscribe the CPU — cores-1
     // beat every lower count in A/B runs (8.4s vs 9.1s).
     let cores = std::thread::available_parallelism()?.get();
+    let decoders = jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2));
     let opts = extract::Opts {
         out: out.to_path_buf(),
         dry: dry_run,
-        decoders: jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2)),
+        decoders,
         writers: writers.unwrap_or(6),
-        readahead: readahead.unwrap_or(extract::DEFAULT_READAHEAD),
+        readahead: readahead.unwrap_or(extract::default_readahead(
+            extract::physical_ram(),
+            env.segments()
+                .iter()
+                .map(|s| s.orig as usize)
+                .max()
+                .unwrap_or(0),
+            decoders,
+        )),
         prealloc,
         verify: !no_verify,
         decoder,

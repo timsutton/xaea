@@ -95,7 +95,7 @@ concentrated the work).
 |---|---|---|
 | decoders `--jobs` | cores−1 (min 2) | writers are I/O-blocked, so decoders may oversubscribe CPU: A/B 8.42/8.94 s vs 9.09/9.44 s for cores (commit `39fef48`) |
 | writers `--writers` | 6 | >4 writers *hurt* before the syscall offload (contention); after offloading syscalls onto them, 6 won the grid (j12w6 = 8.80 s) |
-| decoder channel `--readahead` | 160 | was `nd + 4` (19), which stopped decoders running ahead during the writer-bound first half of the archive; 160 gives −9% (M3 Max) / −7% (M4 Max) wall for +1.5–2 GiB peak RSS. See "Profiling build" below |
+| decoder channel `--readahead` | min(160, RAM/8 ÷ segment size), floor `nd + 4` | was `nd + 4` (19), which stopped decoders running ahead during the writer-bound first half of the archive; 160 gives −9% (M3 Max) / −7% (M4 Max) wall for +1.5–2 GiB peak RSS, so it is capped to 1/8 of physical RAM (64 on 8 GB, 128 on 16 GB, 160 from 32 GB). Not yet measured under real memory pressure. See "Profiling build" below |
 | writer queue | 32 per writer | queue depth 12 cost **~1.5 s** of parser throughput via backpressure; 32 restored in the hardening batch. Worst case pinned memory: writers × 32 × segment size ≈ **3 GiB** — deliberate trade, documented in `extract.rs` |
 
 Raw grid/A-B logs lived in `/tmp/bench_{grid,ab,g2,jobs}.log`
@@ -242,7 +242,7 @@ Read-ahead sweep (full extract, 6 runs):
 |---|---|---|---|---|
 | 19 (old) | 9.00 s | 3.2 GiB | 6.55 s | 3.2 GiB |
 | 64 | 8.73 s | 3.9 GiB | 6.32 s | 3.9 GiB |
-| 160 (default) | 8.22 s | 5.3 GiB | 6.10 s | 4.8 GiB |
+| 160 (default ≥ 32 GB) | 8.22 s | 5.3 GiB | 6.10 s | 4.8 GiB |
 | 640 | 7.89 s | 6.3 GiB | 6.15 s | 4.8 GiB |
 
 M4 Max vs 0.1.3 for the PR as a whole: `--dry-run` 4.63 → 4.43 s (−4.4%),
