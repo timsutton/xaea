@@ -11,8 +11,8 @@
 //! * files pick a writer by round-robin sequence — their Open and all blob
 //!   slices share that one FIFO channel;
 //! * directories hash-route by path, and file parents are additionally
-//!   created on demand (`create_dir_all`, stat-fast when present), so no
-//!   cross-channel ordering assumption is ever made;
+//!   created on demand (only when the file's open fails with ENOENT), so
+//!   no cross-channel ordering assumption is ever made;
 //! * blob pieces are zero-copy Arc<[u8]> views of decoded segment buffers,
 //!   `pwrite`d at explicit offsets;
 //! * **symlinks and non-default directory modes run as a final pass** on
@@ -284,8 +284,14 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
         match w {
             Work::Mkdir { path } => {
                 let full = root.join(path);
-                std::fs::create_dir_all(&full)
-                    .with_context(|| format!("mkdir {}", full.display()))?;
+                // One mkdir(2) in the common case. create_dir_all would also
+                // do just that when it succeeds, but it is the fallback for
+                // the rare cases (parent not created yet, or a file writer
+                // already made this dir on demand: EEXIST + stat).
+                if std::fs::create_dir(&full).is_err() {
+                    std::fs::create_dir_all(&full)
+                        .with_context(|| format!("mkdir {}", full.display()))?;
+                }
             }
             Work::Flush(ack) => {
                 cur = None; // close the open fd before acknowledging
@@ -301,19 +307,31 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
             }
             Work::Open { seq, path, mode } => {
                 let full = root.join(path);
-                // Always ensure the parent: a sibling writer may own its
-                // mkdir and not have run it yet; create_dir_all is a cheap
-                // stat when the dir exists, and EEXIST races are tolerated.
-                if let Some(p) = full.parent() {
-                    std::fs::create_dir_all(p)
-                        .with_context(|| format!("mkdir -p {}", p.display()))?;
+                let open = |p: &Path| {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(p)
+                };
+                // Open first; create the parent only if it is missing. The
+                // parent normally exists already (its Mkdir precedes this
+                // record in the stream), but it may be owned by a sibling
+                // writer that hasn't run it yet. An unconditional
+                // create_dir_all here cost two syscalls per file — mkdir
+                // (EEXIST) + stat — about 250k across an Xcode tree.
+                let f = match open(&full) {
+                    Ok(f) => Ok(f),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if let Some(p) = full.parent() {
+                            std::fs::create_dir_all(p)
+                                .with_context(|| format!("mkdir -p {}", p.display()))?;
+                        }
+                        open(&full)
+                    }
+                    Err(e) => Err(e),
                 }
-                let f = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&full)
-                    .with_context(|| format!("create {}", full.display()))?;
+                .with_context(|| format!("create {}", full.display()))?;
                 // Skip fchmod when open(2) already produced the mode via the
                 // umask default — see create_defaults() for the rationale.
                 if mode != file_default {
