@@ -177,6 +177,8 @@ targets natively, the Linux ones zig-cross-linked against glibc ≥ 2.30 —
 and publishes the GitHub Release with generated notes and `checksums.txt`.
 The workflow also accepts a manual `snapshot` dispatch that dry-runs the
 whole pipeline without publishing.
+To run the same build on your own machine, see
+[RELEASING-LOCALLY.md](doc/RELEASING-LOCALLY.md).
 
 Before it runs, the workflow installs
 [`cosign`](https://github.com/sigstore/cosign-installer), which makes
