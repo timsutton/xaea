@@ -2,6 +2,7 @@ mod aa;
 mod envelope;
 mod extract;
 mod kdf;
+mod prof;
 mod sigverify;
 
 use anyhow::{Context, Result};
@@ -66,6 +67,14 @@ enum Commands {
         /// Writer threads; execute all filesystem syscalls (default: 6)
         #[arg(short = 'w', long)]
         writers: Option<usize>,
+        /// Decoded segments (~16 MiB each) buffered ahead of the parser
+        /// (default: 1/8 of RAM worth, at most 160, at least decoders+4).
+        /// The start of an Xcode archive is file-heavy and filesystem-bound;
+        /// a deep buffer lets decoders run ahead meanwhile so the large-file
+        /// tail is not decode-bound afterwards. Costs memory (up to ~+2 GiB
+        /// peak vs 19); lower it on small machines.
+        #[arg(long)]
+        readahead: Option<usize>,
         /// Pre-reserve each file's extents before writing (helps on some
         /// volumes; measured neutral-to-worse on APFS/NVMe, so off by default)
         #[arg(long)]
@@ -96,10 +105,11 @@ fn main() -> Result<()> {
             no_verify,
             jobs,
             writers,
+            readahead,
             prealloc,
             decoder,
         } => extract_cmd(
-            &file, &out_dir, json, dry_run, no_verify, jobs, writers, prealloc, decoder,
+            &file, &out_dir, json, dry_run, no_verify, jobs, writers, readahead, prealloc, decoder,
         ),
     }
 }
@@ -282,6 +292,7 @@ fn extract_cmd(
     no_verify: bool,
     jobs: Option<usize>,
     writers: Option<usize>,
+    readahead: Option<usize>,
     prealloc: bool,
     decoder: XzDecoder,
 ) -> Result<()> {
@@ -304,11 +315,21 @@ fn extract_cmd(
     // fs syscalls, so decoders can safely oversubscribe the CPU — cores-1
     // beat every lower count in A/B runs (8.4s vs 9.1s).
     let cores = std::thread::available_parallelism()?.get();
+    let decoders = jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2));
     let opts = extract::Opts {
         out: out.to_path_buf(),
         dry: dry_run,
-        decoders: jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2)),
+        decoders,
         writers: writers.unwrap_or(6),
+        readahead: readahead.unwrap_or(extract::default_readahead(
+            extract::physical_ram(),
+            env.segments()
+                .iter()
+                .map(|s| s.orig as usize)
+                .max()
+                .unwrap_or(0),
+            decoders,
+        )),
         prealloc,
         verify: !no_verify,
         decoder,
@@ -324,7 +345,7 @@ fn extract_cmd(
                 "dry_run": dry_run,
                 "verified": !no_verify,
                 "decoder": decoder.name(),
-                "decoders": opts.decoders, "writers": opts.writers,
+                "decoders": opts.decoders, "writers": opts.writers, "readahead": opts.readahead,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,
             })

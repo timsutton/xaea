@@ -9,9 +9,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
+* `extract --readahead N`: how many decoded segments are buffered ahead of
+  the writers. The default now scales with your RAM, which speeds up large
+  extractions at the cost of some memory; lower it to use less.
+* `profile` cargo feature (`cargo build --features profile`): prints a
+  per-stage timing breakdown (`XAEA_STATS=1`) or a live timeline
+  (`XAEA_TL=1`) for performance investigations. No cost when not enabled.
 
 ### Changed
 
+* Faster extraction: a full Xcode extract is roughly 5–13% faster than
+  0.1.3, from leaner segment decoding and fewer filesystem calls.
 * **CLI:** `extract` now takes the output directory as an optional
   positional argument (`xaea extract FILE [OUT_DIR]`) instead of the
   required `-o/--out` flag. It defaults to the current directory, which may

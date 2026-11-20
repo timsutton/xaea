@@ -89,6 +89,7 @@ Options on `extract`:
 | `--no-verify` | skip all integrity/authenticity checks (trusted or damaged input only; tampering goes unnoticed) |
 | `-j/--jobs` | decoder threads (default: cores−1, min 2) |
 | `-w/--writers` | writer threads (default: 6 — optimal on APFS/NVMe) |
+| `--readahead` | decoded segments (~16 MiB each) buffered ahead of the parser (default: 1/8 of RAM worth, between decoders+4 and 160 — 128 on 16 GB, 160 from 32 GB; lower it to cut peak memory, e.g. `--readahead 19` ≈ 3.2 GiB peak vs ≈ 5 GiB) |
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
 | `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |

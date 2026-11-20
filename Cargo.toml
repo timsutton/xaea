@@ -19,7 +19,10 @@ x509-parser = "0.18"
 p256 = { version = "0.14", features = ["ecdsa"] }
 p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
-xz2 = { version = "0.1.7", features = ["static"] }
+# Vendored xz-utils (5.8.x), statically linked; we call the one-shot
+# lzma_stream_buffer_decode directly. From the liblzma crate family, the
+# maintained successor of xz2/lzma-sys (whose xz 5.2.5 decoded ~23% slower).
+liblzma-sys = { version = "0.4", features = ["static"] }
 signature = "3"
 ecdsa = "0.17"
 # Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;
@@ -28,6 +31,15 @@ rsa = { version = "0.10", default-features = false, features = [
     "std", "encoding", "pkcs1v15",
 ] }
 serde_json = "1"
+
+[features]
+# Pipeline timing probes (XAEA_STATS breakdown, XAEA_TL timeline, XAEA_DQ/XAEA_WQ
+# queue overrides). Compiles to nothing when off; see src/prof.rs.
+profile = []
+
+[dev-dependencies]
+# Unit tests only: builds .xz streams to feed the decoder.
+liblzma = { version = "0.4", features = ["static"] }
 
 [profile.release]
 lto = true
