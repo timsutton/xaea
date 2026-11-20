@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Changed
+
+* macOS release binaries are Developer ID-signed (hardened runtime) and
+  notarized by the Release workflow.
+
 ## 0.1.2 - 2026-11-19
 
 ### Changed

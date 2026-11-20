@@ -37,6 +37,28 @@ universal_binaries:
   - ids: [darwin]
     replace: true
 
+# Sign + notarize the darwin binaries (Developer ID, hardened runtime) via
+# quill, built into GoReleaser OSS — no codesign/xcrun needed. Runs after the
+# build (and any universal-binary merge) and before archiving, so the signed
+# binary is what lands in the tarball. A bare Mach-O can't be stapled;
+# Gatekeeper looks the ticket up online on first run of a quarantined copy.
+# Skipped when MACOS_SIGN_P12 is unset (snapshots, forks); release.yml
+# refuses to publish a real release without the secrets.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - darwin
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}" # base64 .p12
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}" # base64 .p8
+        wait: true
+        timeout: 20m
+
 archives:
   - # Default name template (xaea_<version>_<os>_<arch>.tar.gz) except that the
     # lipo-merged macOS binary is "universal" rather than GoReleaser's "all".

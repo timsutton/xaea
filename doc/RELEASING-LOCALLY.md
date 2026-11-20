@@ -33,6 +33,8 @@ CI pins the compiler (`RUST_VERSION` in the workflows); a local run uses
 whatever rustup's active toolchain is, so it's for checking the pipeline,
 not for reproducing a published binary.
 
+Local snapshots are unsigned: signing only runs when `MACOS_SIGN_P12` is set.
+
 ## Dry-running in CI instead
 
 Actions → Release → Run workflow, with **snapshot** ticked, does the same
