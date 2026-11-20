@@ -169,15 +169,17 @@ fn inspect(
                 "checksum_seconds": t0.elapsed().as_secs_f64(),
             }));
         }
-        certs_summary = serde_json::json!(&auth
-            .certs
-            .iter()
-            .map(|c| serde_json::json!({
-                "subject": c.subject, "issuer": c.issuer, "sig_alg": c.sig_alg,
-                "key": c.key_kind, "serial": c.serial,
-                "valid": [c.not_before, c.not_after],
-            }))
-            .collect::<Vec<_>>());
+        certs_summary = serde_json::json!(
+            &auth
+                .certs
+                .iter()
+                .map(|c| serde_json::json!({
+                    "subject": c.subject, "issuer": c.issuer, "sig_alg": c.sig_alg,
+                    "key": c.key_kind, "serial": c.serial,
+                    "valid": [c.not_before, c.not_after],
+                }))
+                .collect::<Vec<_>>()
+        );
         integrity_ok &= auth.content_sig_ok
             && auth.sig_padded_ok
             && auth.chain_all_ok

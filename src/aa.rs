@@ -16,7 +16,7 @@
 //! record is immediately followed by its `DAT` bytes in the stream; the bytes
 //! are *not* part of the record size.
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use std::sync::Arc;
 
 /// A zero-copy slice of a decoded segment buffer.
