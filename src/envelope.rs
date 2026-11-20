@@ -3,7 +3,7 @@
 //! (see doc/FORMAT-NOTES.md).
 
 use crate::kdf;
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 
@@ -62,14 +62,14 @@ pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder) -> Result<Vec<u8>> {
 
 #[cfg(target_os = "macos")]
 mod libcompression {
-    use anyhow::{ensure, Result};
+    use anyhow::{Result, ensure};
     use std::cell::RefCell;
 
     /// COMPRESSION_LZMA: LZMA2 in an .xz container (<compression.h>).
     const COMPRESSION_LZMA: i32 = 0x306;
 
     #[link(name = "compression")]
-    extern "C" {
+    unsafe extern "C" {
         fn compression_decode_buffer(
             dst: *mut u8,
             dst_size: usize,
@@ -254,7 +254,7 @@ impl<'a> Envelope<'a> {
             None
         };
         let sig_off = sig_off.unwrap_or(auth_end); // no-signature profiles: empty section
-                                                   // Profile 0: random 32-byte key from which the main key is derived.
+        // Profile 0: random 32-byte key from which the main key is derived.
         let pubkey_off = off;
         off += 32;
         let mainsalt_off = off;

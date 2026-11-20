@@ -5,7 +5,7 @@
 //! itself zeroed (kinnay FORMAT.md "Signature"). The signing certificate
 //! chain arrives in the auth data as PEM.
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use signature::hazmat::PrehashVerifier;
 use x509_parser::prelude::*;
@@ -374,10 +374,10 @@ fn verify_with(issuer: &ParsedCert, signed: &ParsedCert) -> Result<bool> {
             n => bail!("unsupported EC point length {n}"),
         }
     } else if issuer.spki_alg == OID_RSA_ENC {
+        use rsa::PublicKey as RsaPublicKey;
         use rsa::pkcs1v15::{Signature as RsaSig, VerifyingKey};
         use rsa::pkcs8::DecodePublicKey;
         use rsa::signature::Verifier;
-        use rsa::PublicKey as RsaPublicKey;
         let pubk =
             RsaPublicKey::from_public_key_der(&issuer.spki_der).context("issuer rsa pubkey")?;
         let sig = RsaSig::try_from(signed.sig.as_slice()).context("rsa sig der")?;

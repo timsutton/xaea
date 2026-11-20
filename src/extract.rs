@@ -44,14 +44,14 @@
 
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::envelope::{Envelope, XzDecoder};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::{symlink, FileExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, PermissionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
 use std::time::Instant;
 
@@ -752,17 +752,19 @@ fn extract_body(
     let mut decoders = Vec::new();
     for _ in 0..nd {
         let (next, fh, segs, dtx) = (next.clone(), fh.clone(), segs.clone(), dtx.clone());
-        decoders.push(thread::spawn(move || loop {
-            let i = next.fetch_add(1, Relaxed);
-            if i >= nseg {
-                break;
-            }
-            let sg = &segs[i];
-            let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i, decoder)
-                .map(|b| (i, b))
-                .with_context(|| format!("decode segment {i}"));
-            if dtx.send(r).is_err() {
-                break; // parser is gone (error path)
+        decoders.push(thread::spawn(move || {
+            loop {
+                let i = next.fetch_add(1, Relaxed);
+                if i >= nseg {
+                    break;
+                }
+                let sg = &segs[i];
+                let r = decode_segment(&fh, sg.off, sg.comp, sg.orig, sg.cksum, i, decoder)
+                    .map(|b| (i, b))
+                    .with_context(|| format!("decode segment {i}"));
+                if dtx.send(r).is_err() {
+                    break; // parser is gone (error path)
+                }
             }
         }));
     }
