@@ -5,19 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+## Unreleased
+
+## 0.1.1 - 2026-11-19
+
 ### Changed
 
-* Renamed the tool from `unaea` to `xaea` (binary, crate, and the
-  `XAEA_STATS` environment variable, formerly `UNAEA_STATS`).
-
-### Added
-
-* `--decoder liblzma|libcompression` on `extract` and `inspect`: opt into
-  Apple's OS-provided libcompression LZMA decoder (macOS only) instead of
-  the vendored liblzma default. On M3 Max, full extracts were roughly 5%
-  faster (−4.7% and −5.8% across two runs, within ±0.3–0.5 s noise).
-* `scripts/bench.sh`: reusable end-to-end hyperfine harness comparing
-  named variants of `unaea extract` on a real archive.
+* CI Builds releases on macOS.
 
 ## 0.1.0 — 2026-11-19
 
