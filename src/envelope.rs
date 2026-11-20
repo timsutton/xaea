@@ -5,7 +5,7 @@
 use crate::kdf;
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
-use std::borrow::Cow;
+use std::sync::Arc;
 
 /// Which LZMA (.xz) implementation decodes segments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -36,6 +36,35 @@ impl XzDecoder {
     }
 }
 
+/// A segment buffer: decoded bytes shared zero-copy between the parser and
+/// the writers (see `aa::Piece`).
+pub type SegBuf = Arc<[u8]>;
+
+/// Allocate a `len`-byte [`SegBuf`] and let `fill` write it in place through
+/// a raw pointer, so decoders write straight into the buffer the writers
+/// will read. Going through `Vec` -> `Box<[u8]>` -> `Arc::from` instead
+/// costs a second allocation and a full copy of every segment: `Arc` keeps
+/// its refcounts in front of the data, so it cannot adopt a `Box`'s
+/// allocation.
+///
+/// # Safety
+/// When `fill` returns `Ok`, it must have initialized all `len` bytes at
+/// the pointer it was given (and written nothing beyond them). On `Err` the
+/// buffer is dropped without being read.
+pub(crate) unsafe fn segbuf_filled(
+    len: usize,
+    fill: impl FnOnce(*mut u8) -> Result<()>,
+) -> Result<SegBuf> {
+    let mut buf = Arc::<[u8]>::new_uninit_slice(len);
+    let dst = Arc::get_mut(&mut buf)
+        .expect("freshly allocated Arc is unique")
+        .as_mut_ptr()
+        .cast::<u8>();
+    fill(dst)?;
+    // SAFETY: per this function's contract, `fill` initialized every byte.
+    Ok(unsafe { buf.assume_init() })
+}
+
 /// Decompress one standalone .xz-stream segment whose decoded size `orig`
 /// is known from the segment header; anything else is an error.
 ///
@@ -44,12 +73,7 @@ impl XzDecoder {
 /// (typically CRC64 over the same decoded bytes) redundant, so liblzma
 /// skips it (`LZMA_IGNORE_CHECK`, ~12% of decode time in a benchmark).
 /// Without verification the xz check stays on — it is then the only one.
-pub fn decode_xz(
-    data: &[u8],
-    orig: usize,
-    dec: XzDecoder,
-    sha256_follows: bool,
-) -> Result<Vec<u8>> {
+pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
     match dec {
         XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),
         #[cfg(target_os = "macos")]
@@ -59,60 +83,62 @@ pub fn decode_xz(
     }
 }
 
-/// One-shot liblzma decode (`lzma_stream_buffer_decode`) straight into an
-/// exact-size buffer: no `Read`/`BufReader` layer copying the input through
-/// a small buffer, no zero-filling of the output before decoding into it.
-/// Same acceptance as the streaming decoder it replaces: one .xz stream,
-/// decoded size exactly `orig` (longer → LZMA_BUF_ERROR, shorter → size
-/// mismatch), bytes after the end of the stream ignored.
-fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<Vec<u8>> {
+/// One-shot liblzma decode (`lzma_stream_buffer_decode`) straight into the
+/// exact-size segment buffer: no `Read`/`BufReader` layer copying the input
+/// through a small buffer, no zero-filling of the output before decoding
+/// into it. Same acceptance as the streaming decoder it replaces: one .xz
+/// stream, decoded size exactly `orig` (longer → LZMA_BUF_ERROR, shorter →
+/// size mismatch), bytes after the end of the stream ignored.
+fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf> {
     use liblzma_sys as lz;
-    let mut out = Vec::<u8>::with_capacity(orig);
     let flags = if ignore_check {
         lz::LZMA_IGNORE_CHECK
     } else {
         0
     };
-    let (mut memlimit, mut in_pos, mut out_pos) = (u64::MAX, 0usize, 0usize);
-    // SAFETY: `data` is a valid input buffer of `data.len()` bytes and `out`
-    // has capacity for `orig` bytes; liblzma writes at most `orig` bytes to
-    // `out` and reports how many in `out_pos`.
-    let ret = unsafe {
-        lz::lzma_stream_buffer_decode(
-            &mut memlimit,
-            flags,
-            std::ptr::null(),
-            data.as_ptr(),
-            &mut in_pos,
-            data.len(),
-            out.as_mut_ptr(),
-            &mut out_pos,
-            orig,
-        )
+    let fill = |dst: *mut u8| -> Result<()> {
+        let (mut memlimit, mut in_pos, mut out_pos) = (u64::MAX, 0usize, 0usize);
+        // SAFETY: `data` is a valid input buffer of `data.len()` bytes and
+        // `dst` points to `orig` writable bytes; liblzma writes at most
+        // `orig` bytes there and reports how many in `out_pos`.
+        let ret = unsafe {
+            lz::lzma_stream_buffer_decode(
+                &mut memlimit,
+                flags,
+                std::ptr::null(),
+                data.as_ptr(),
+                &mut in_pos,
+                data.len(),
+                dst,
+                &mut out_pos,
+                orig,
+            )
+        };
+        let what = match ret {
+            lz::LZMA_OK => None,
+            lz::LZMA_FORMAT_ERROR => Some("not an .xz stream"),
+            lz::LZMA_OPTIONS_ERROR => Some("unsupported .xz options"),
+            lz::LZMA_DATA_ERROR => Some("corrupt data"),
+            lz::LZMA_BUF_ERROR => Some("output exceeds the declared size, or input truncated"),
+            lz::LZMA_MEMLIMIT_ERROR | lz::LZMA_MEM_ERROR => Some("out of memory"),
+            _ => Some("liblzma error"),
+        };
+        if let Some(what) = what {
+            bail!("xz decode: {what} (lzma_ret {ret})");
+        }
+        ensure!(
+            out_pos == orig,
+            "xz decoded size mismatch ({out_pos} vs {orig})"
+        );
+        Ok(())
     };
-    let what = match ret {
-        lz::LZMA_OK => None,
-        lz::LZMA_FORMAT_ERROR => Some("not an .xz stream"),
-        lz::LZMA_OPTIONS_ERROR => Some("unsupported .xz options"),
-        lz::LZMA_DATA_ERROR => Some("corrupt data"),
-        lz::LZMA_BUF_ERROR => Some("output exceeds the declared size, or input truncated"),
-        lz::LZMA_MEMLIMIT_ERROR | lz::LZMA_MEM_ERROR => Some("out of memory"),
-        _ => Some("liblzma error"),
-    };
-    if let Some(what) = what {
-        bail!("xz decode: {what} (lzma_ret {ret})");
-    }
-    ensure!(
-        out_pos == orig,
-        "xz decoded size mismatch ({out_pos} vs {orig})"
-    );
-    // SAFETY: liblzma initialized the first `out_pos` (== orig) bytes.
-    unsafe { out.set_len(out_pos) };
-    Ok(out)
+    // SAFETY: `fill` returns Ok only when liblzma wrote exactly `orig` bytes.
+    unsafe { segbuf_filled(orig, fill) }
 }
 
 #[cfg(target_os = "macos")]
 mod libcompression {
+    use super::SegBuf;
     use anyhow::{Result, ensure};
     use std::cell::RefCell;
 
@@ -142,29 +168,31 @@ mod libcompression {
     }
 
     /// The output buffer is exactly `orig` bytes: a spare byte (to detect an
-    /// over-long stream, which decode_buffer silently truncates) would force
-    /// a realloc+copy when the Vec becomes a boxed slice, and measured 5x
-    /// peak RSS. Over-long streams are instead caught by the per-segment
-    /// SHA-256 when verifying.
-    pub fn decode(data: &[u8], orig: usize) -> Result<Vec<u8>> {
-        let mut out = Vec::<u8>::with_capacity(orig);
-        let n = SCRATCH.with_borrow_mut(|scratch| unsafe {
-            compression_decode_buffer(
-                out.as_mut_ptr(),
-                orig,
-                data.as_ptr(),
-                data.len(),
-                scratch.as_mut_ptr().cast(),
-                COMPRESSION_LZMA,
-            )
-        });
-        ensure!(
-            n == orig,
-            "libcompression xz decode failed or size mismatch ({n} vs {orig})"
-        );
-        // SAFETY: compression_decode_buffer initialized the first n bytes.
-        unsafe { out.set_len(n) };
-        Ok(out)
+    /// over-long stream, which decode_buffer silently truncates) once forced
+    /// a realloc+copy and measured 5x peak RSS. Over-long streams are
+    /// instead caught by the per-segment SHA-256 when verifying.
+    pub fn decode(data: &[u8], orig: usize) -> Result<SegBuf> {
+        let fill = |dst: *mut u8| -> Result<()> {
+            // SAFETY: `dst` points to `orig` writable bytes; `data` and the
+            // scratch buffer are valid for their lengths.
+            let n = SCRATCH.with_borrow_mut(|scratch| unsafe {
+                compression_decode_buffer(
+                    dst,
+                    orig,
+                    data.as_ptr(),
+                    data.len(),
+                    scratch.as_mut_ptr().cast(),
+                    COMPRESSION_LZMA,
+                )
+            });
+            ensure!(
+                n == orig,
+                "libcompression xz decode failed or size mismatch ({n} vs {orig})"
+            );
+            Ok(())
+        };
+        // SAFETY: `fill` returns Ok only when all `orig` bytes were written.
+        unsafe { super::segbuf_filled(orig, fill) }
     }
 }
 
@@ -669,11 +697,15 @@ impl<'a> Envelope<'a> {
                         let mut ok = 0u64;
                         let mut failed = Vec::new();
                         for (idx, data, cksum, orig) in part {
-                            let decoded = if data.len() as u32 == *orig {
-                                Cow::Borrowed(*data)
+                            let owned;
+                            let decoded: &[u8] = if data.len() as u32 == *orig {
+                                data
                             } else {
                                 match decode_xz(data, *orig as usize, dec, true) {
-                                    Ok(d) => Cow::Owned(d),
+                                    Ok(d) => {
+                                        owned = d;
+                                        &owned
+                                    }
                                     Err(_) => {
                                         failed.push(*idx);
                                         continue;
@@ -684,7 +716,7 @@ impl<'a> Envelope<'a> {
                                 failed.push(*idx);
                                 continue;
                             }
-                            let h: [u8; 32] = Sha256::digest(&decoded).into();
+                            let h: [u8; 32] = Sha256::digest(decoded).into();
                             if h.as_slice() == *cksum {
                                 ok += 1;
                             } else {
@@ -777,7 +809,7 @@ mod tests {
         let enc = xz(&data);
         let dec = |b: &[u8], orig, ignore| decode_xz(b, orig, XzDecoder::Liblzma, ignore);
         for ignore in [false, true] {
-            assert_eq!(dec(&enc, n, ignore).unwrap(), data);
+            assert_eq!(&*dec(&enc, n, ignore).unwrap(), &data[..]);
         }
         // Declared size must match exactly, in both directions.
         assert!(dec(&enc, n - 1, true).is_err(), "over-long stream");
@@ -794,6 +826,6 @@ mod tests {
         let mut bad = enc.clone();
         bad[at] ^= 1;
         assert!(dec(&bad, n, false).is_err(), "check enforced");
-        assert_eq!(dec(&bad, n, true).unwrap(), data, "check skipped");
+        assert_eq!(&*dec(&bad, n, true).unwrap(), &data[..], "check skipped");
     }
 }

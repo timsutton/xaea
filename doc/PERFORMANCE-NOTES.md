@@ -65,7 +65,14 @@ concentrated the work).
 - **Zero-copy end to end.** The AA01 parser (`aa.rs`) slices the decoded
   segment buffers in place — `Piece { buf: Arc<[u8]>, start, end }` —
   and file blobs are handed to writers as `Piece`s. A blob's bytes are
-  copied exactly once: into the page cache at `pwrite`.
+  copied exactly once: into the page cache at `pwrite`. Decoders write
+  straight into that `Arc<[u8]>` (`envelope::segbuf_filled`, via
+  `Arc::new_uninit_slice`). Until that change every segment was decoded
+  into a `Vec` first, and `Arc::from(Box<[u8]>)` silently allocated a
+  second 16 MiB buffer and copied the segment into it, because `Arc`
+  keeps its refcounts in front of the data and cannot adopt the `Box`'s
+  allocation (~1.1 ms per segment on x86-64, and two live buffers per
+  decoder for a moment).
 - **Reorder + parse thread** reassembles segment order (HashMap keyed on
   sequence + `next_expected` cursor), runs the object-stream parser, and
   *only* dispatches work. No syscalls here — that's the whole point (see
@@ -149,7 +156,8 @@ Two implementation details matter:
   detect over-long streams (`compression_decode_buffer` truncates
   silently). The capacity ≠ length mismatch made `into_boxed_slice`
   realloc+copy each 16 MiB segment and peak RSS went 0.2 → 1.1 GiB at
-  `-j 2`. With an exact buffer it matches liblzma. Over-long or
+  `-j 2`. With an exact buffer it matches liblzma. (Both decoders now
+  write directly into the exact-size shared segment buffer.) Over-long or
   corrupt streams are still caught by the per-segment SHA-256 when
   verifying (the default); with `--no-verify` only the size is checked.
 - **Per-thread scratch buffer** (`compression_decode_scratch_buffer_size`)

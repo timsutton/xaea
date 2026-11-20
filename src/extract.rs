@@ -596,13 +596,18 @@ fn link_target(s: &[u8]) -> Result<String> {
 
 fn read_pread(f: &File, off: u64, len: usize) -> Result<Vec<u8>> {
     let mut v = vec![0u8; len];
+    read_pread_into(f, off, &mut v)?;
+    Ok(v)
+}
+
+fn read_pread_into(f: &File, off: u64, buf: &mut [u8]) -> Result<()> {
     let mut done = 0usize;
-    while done < len {
-        let n = f.read_at(&mut v[done..], off + done as u64)?;
+    while done < buf.len() {
+        let n = f.read_at(&mut buf[done..], off + done as u64)?;
         ensure!(n > 0, "unexpected EOF at offset {}", off + done as u64);
         done += n;
     }
-    Ok(v)
+    Ok(())
 }
 
 /// Decode one segment (pread stored bytes; LZMA-decode to `orig`) and, when
@@ -618,12 +623,24 @@ fn decode_segment(
     index: usize,
     dec: XzDecoder,
 ) -> Result<Arc<[u8]>> {
+    // Both arms produce the shared segment buffer directly (no Vec -> Arc
+    // copy; see envelope::segbuf_filled).
     let buf: Arc<[u8]> = if comp == orig {
-        Arc::from(read_pread(fh, data_off, comp as usize)?.into_boxed_slice())
+        let len = orig as usize;
+        let fill = |dst: *mut u8| -> Result<()> {
+            // SAFETY: `dst` points to `len` writable bytes. Zeroing them
+            // first makes the `&mut [u8]` handed to pread fully initialized.
+            let s = unsafe {
+                std::ptr::write_bytes(dst, 0, len);
+                std::slice::from_raw_parts_mut(dst, len)
+            };
+            read_pread_into(fh, data_off, s)
+        };
+        // SAFETY: `fill` initialized all `len` bytes (zeroed, then read).
+        unsafe { crate::envelope::segbuf_filled(len, fill)? }
     } else {
         let raw = read_pread(fh, data_off, comp as usize)?;
-        let out = crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())?;
-        Arc::from(out.into_boxed_slice())
+        crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())?
     };
     if let Some(want) = expect {
         use sha2::{Digest, Sha256};
