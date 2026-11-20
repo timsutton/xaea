@@ -64,7 +64,7 @@ for v in "$@"; do
     extra=${v#*=}
     [ "$name" != "$v" ] || { echo "bench: variant must be name=args, got '$v'" >&2; exit 2; }
     # $extra is intentionally unquoted: it is a list of xaea flags.
-    args+=(-n "$name" "$(printf '%q ' "$bin" extract "$fixture" -o "$out") $dry $extra")
+    args+=(-n "$name" "$(printf '%q ' "$bin" extract "$fixture" "$out") $dry $extra")
 done
 
 if [ "$(uname)" = Darwin ]; then

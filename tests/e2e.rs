@@ -154,7 +154,6 @@ fn synthetic_extract_fidelity() {
     let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
-        .arg("-o")
         .arg(&out)
         .arg("--json")
         .output()
@@ -245,7 +244,6 @@ fn dry_run_matches_extract_counts() {
     let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
-        .arg("-o")
         .arg(dir.join("dry-out"))
         .arg("--dry-run")
         .arg("--json")
@@ -330,7 +328,6 @@ fn tampering_is_detected() {
     let refused = xaea()
         .arg("extract")
         .arg(&c1)
-        .arg("-o")
         .arg(dir.join("refused"))
         .output()
         .unwrap();
@@ -338,7 +335,6 @@ fn tampering_is_detected() {
     let forced = xaea()
         .arg("extract")
         .arg(&c1)
-        .arg("-o")
         .arg(dir.join("forced"))
         .arg("--no-verify")
         .output()
@@ -367,36 +363,88 @@ fn tampering_is_detected() {
 }
 
 #[test]
-fn extract_rejects_nonempty_out_but_dry_run_proceeds() {
+fn extract_into_populated_dir_ok_but_top_level_collision_aborts() {
     let Some((dir, _)) = synthetic("outpolicy") else {
         return;
     };
-    let dirty = dir.join("dirty");
-    fs::create_dir_all(&dirty).unwrap();
-    fs::write(dirty.join("occupant"), b"x").unwrap();
+    let archive = dir.join("archive.aea");
 
-    let blocked = xaea()
-        .arg("extract")
-        .arg(dir.join("archive.aea"))
-        .arg("-o")
-        .arg(&dirty)
-        .output()
-        .unwrap();
-    assert!(!blocked.status.success());
-    assert!(
-        String::from_utf8_lossy(&blocked.stderr).contains("not empty"),
-        "clear error message"
-    );
-
+    // A populated output dir is fine as long as the archive's top-level
+    // entries ("T", "escaped" in the synthetic archive) are not in it.
+    let busy = dir.join("busy");
+    fs::create_dir_all(&busy).unwrap();
+    fs::write(busy.join("occupant"), b"x").unwrap();
     let ok = xaea()
         .arg("extract")
-        .arg(dir.join("archive.aea"))
-        .arg("-o")
-        .arg(&dirty)
+        .arg(&archive)
+        .arg(&busy)
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "populated dir: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(busy.join("T/plain.txt").is_file());
+    assert_eq!(fs::read(busy.join("occupant")).unwrap(), b"x");
+
+    // Extracting again collides on "T": abort, touching nothing.
+    let marker = busy.join("T/plain.txt");
+    let before = fs::metadata(&marker).unwrap().modified().unwrap();
+    let again = xaea()
+        .arg("extract")
+        .arg(&archive)
+        .arg(&busy)
+        .output()
+        .unwrap();
+    assert!(!again.status.success(), "collision must abort");
+    let err = String::from_utf8_lossy(&again.stderr);
+    assert!(err.contains("already exists"), "clear error: {err}");
+    assert_eq!(fs::metadata(&marker).unwrap().modified().unwrap(), before);
+
+    // A dangling symlink at the top-level name is a collision too.
+    let dangling = dir.join("dangling");
+    fs::create_dir_all(&dangling).unwrap();
+    std::os::unix::fs::symlink("nowhere", dangling.join("T")).unwrap();
+    let r = xaea()
+        .arg("extract")
+        .arg(&archive)
+        .arg(&dangling)
+        .output()
+        .unwrap();
+    assert!(!r.status.success(), "dangling symlink counts as existing");
+
+    // Dry-run is a faithful preflight: it reports the same collision.
+    let dry = xaea()
+        .arg("extract")
+        .arg(&archive)
+        .arg(&busy)
         .arg("--dry-run")
         .output()
         .unwrap();
-    assert!(ok.status.success(), "dry-run is safe over existing dirs");
+    assert!(!dry.status.success(), "dry-run reports the collision");
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn extract_defaults_to_current_dir() {
+    let Some((dir, _)) = synthetic("cwd") else {
+        return;
+    };
+    let cwd = dir.join("cwd");
+    fs::create_dir_all(&cwd).unwrap();
+    let run = xaea()
+        .current_dir(&cwd)
+        .arg("extract")
+        .arg(dir.join("archive.aea"))
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(cwd.join("T/plain.txt").is_file(), "extracted into cwd");
     fs::remove_dir_all(&dir).ok();
 }
 
@@ -410,7 +458,6 @@ fn evil_symlink_archives_are_refused_and_contained() {
         let run = xaea()
             .arg("extract")
             .arg(dir.join(name))
-            .arg("-o")
             .arg(&out)
             .output()
             .unwrap();
@@ -449,7 +496,6 @@ fn libcompression_decoder_matches_liblzma() {
         let run = xaea()
             .arg("extract")
             .arg(dir.join("archive.aea"))
-            .arg("-o")
             .arg(&out)
             .args(["--json", "--decoder", dec])
             .output()

@@ -102,8 +102,8 @@ jobs:
           hyperfine -N --warmup 1 --runs "$RUNS" \
             --export-json perf/readonly.json \
             -n "inspect --verify"          "$U inspect $AEA_FIXTURE --verify --json" \
-            -n "extract --dry-run"         "$U extract $AEA_FIXTURE -o $RUNNER_TEMP/dry --dry-run --json" \
-            -n "extract --dry-run --no-verify" "$U extract $AEA_FIXTURE -o $RUNNER_TEMP/dry --dry-run --no-verify --json" \
+            -n "extract --dry-run"         "$U extract $AEA_FIXTURE $RUNNER_TEMP/dry --dry-run --json" \
+            -n "extract --dry-run --no-verify" "$U extract $AEA_FIXTURE $RUNNER_TEMP/dry --dry-run --no-verify --json" \
             --output null
 
       - name: Benchmark (full extract)
@@ -115,7 +115,7 @@ jobs:
             --prepare "rm -rf $OUT" \
             --conclude "rm -rf $OUT" \
             --export-json perf/full.json \
-            -n "extract (on disk)" "$U extract $AEA_FIXTURE -o $OUT --json" \
+            -n "extract (on disk)" "$U extract $AEA_FIXTURE $OUT --json" \
             --output null
 
       # Throughput = payload bytes / mean wall time. The byte count and the
@@ -123,7 +123,7 @@ jobs:
       # carry the decoder/writer config they were measured with.
       - name: Summarize
         run: |
-          SUMMARY=$(target/release/xaea extract "$AEA_FIXTURE" -o "$RUNNER_TEMP/dry" --dry-run --no-verify --json)
+          SUMMARY=$(target/release/xaea extract "$AEA_FIXTURE" "$RUNNER_TEMP/dry" --dry-run --no-verify --json)
           python3 - "$SUMMARY" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import glob, json, os, subprocess, sys
           info = json.loads(sys.argv[1])

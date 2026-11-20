@@ -362,6 +362,10 @@ struct Cur {
 
 struct DispatchSink {
     dry: bool,
+    /// Output root, used to refuse top-level collisions with existing paths.
+    root: PathBuf,
+    /// Top-level names already checked (each is checked once, on first sight).
+    seen_top: std::collections::HashSet<std::ffi::OsString>,
     txs: Vec<SyncSender<Work>>,
     cur: Option<Cur>,
     st: Stats,
@@ -400,6 +404,30 @@ impl DispatchSink {
         Ok(())
     }
 
+    /// Refuse to extract over an existing path. Checked once per distinct
+    /// top-level name, *before* any work for it is dispatched, so a
+    /// collision (typically `Xcode.app` already present) aborts at the
+    /// archive's first record with nothing written — and never trips over
+    /// entries this extraction created itself. `symlink_metadata`: a
+    /// dangling symlink at that name is a collision too.
+    fn check_top_level(&mut self, rel: &Path) -> Result<()> {
+        let Some(Component::Normal(top)) = rel.components().next() else {
+            return Ok(());
+        };
+        if !self.seen_top.insert(top.to_os_string()) {
+            return Ok(());
+        }
+        let dest = self.root.join(top);
+        match std::fs::symlink_metadata(&dest) {
+            Ok(_) => bail!(
+                "{} already exists; remove it or choose another output directory",
+                dest.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("stat {}", dest.display())),
+        }
+    }
+
     fn send(&self, w: usize, work: Work) -> Result<()> {
         self.txs[w]
             .send(work)
@@ -416,6 +444,7 @@ impl Sink for DispatchSink {
         // Strip setuid/setgid/sticky: an unprivileged extraction must never
         // plant privilege bits (review #9; Apple's own tree needs none).
         let mode = rec.mode & 0o0777;
+        self.check_top_level(&rel)?;
         let nw = self.txs.len();
         match rec.typ {
             b'D' => {
@@ -725,6 +754,8 @@ fn extract_body(
 
     let mut sink = DispatchSink {
         dry: opts.dry,
+        root: opts.out.clone(),
+        seen_top: Default::default(),
         txs: wtx,
         cur: None,
         st: Stats {
