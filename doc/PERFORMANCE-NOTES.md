@@ -133,7 +133,9 @@ default because it is portable and its behaviour is pinned by our build.
 Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh` — **against
 xz 5.2.5** (the old `xz2`/`lzma-sys` crates). The vendored liblzma is now
 xz 5.8.x via the `liblzma` crate, which decoded a 16 MiB segment ~23%
-faster in a microbenchmark (x86-64), so this comparison needs re-running:
+faster in a microbenchmark on x86-64 only (no difference on Apple
+Silicon — see "What the xz upgrade does" below), so this comparison
+needs re-running:
 
 | run | liblzma | libcompression |
 |---|---|---|
@@ -201,6 +203,70 @@ offload **9.8 s** → jobs/writers grid **8.80 s** → cores−1 A/B **8.4 s**
 MACs → **10.6 s verified / 9.0 s unverified** at v0.1.0. Every step was
 re-proven byte-identical (137,459 paths, zero diffs, permission modes
 included) against the oracle tree with `scripts/verify.sh`.
+
+## What the xz upgrade does (and doesn't) buy
+
+The PR moves the vendored xz-utils from 5.2.5 (`xz2`/`lzma-sys`) to 5.8.4
+(`liblzma-sys`). **On Apple Silicon this does not make the decoder faster.**
+The decode-time gain on M-series comes from skipping the redundant CRC64
+(`LZMA_IGNORE_CHECK`, available in 5.2.5 too), the one-shot call and the
+removed per-segment copy — not from the xz version.
+
+Why, from the vendored sources' NEWS and `rangecoder/range_decoder.h`:
+
+- The LZMA decoder speed work landed in the 5.5.x development series /
+  5.6.0 (2024): "Speed optimizations to the C code and added GCC & Clang
+  compatible inline assembly for x86-64." Three variants were built at
+  first (basic C, branchless C, x86-64 inline assembly).
+- Before 5.6.0 shipped, the branchless C variant was disabled again: in
+  Lasse's benchmark feedback it "can be better than basic on x86-64 but
+  often it's slightly worse on other archs. Since asm is much better on
+  x86-64, branchless C is not used at all."
+- The resulting default is `LZMA_RANGE_DECODER_CONFIG 0x1F0` (the asm
+  range decoder) **only** for x86-64 with GCC/Clang, and `0` (basic C)
+  everywhere else, including every `aarch64` build. So Apple Silicon runs
+  the basic C decoder; 5.6+ only tweaked that path by "a few percent over
+  5.4.x" per the NEWS, and nothing that shows against 5.2.5 here.
+- 5.8.0 added SSE2 intrinsics instead of `memcpy()` in the LZMA/LZMA2
+  decoder on 32/64-bit x86 (0–5% typically, >15% on musl with highly
+  compressed data). Also x86-only.
+
+Measured, one real 16 MiB slice of an Xcode binary (`LLDB.framework`),
+`xz -6 --check=crc64`, single thread, `lzma_stream_buffer_decode`,
+best of 15, `scripts/xz_decoder_bench.sh`:
+
+| | 5.2.5 | 5.8.4 |
+|---|---|---|
+| M3 Max, CRC64 checked | 170.3 / 168.7 ms | 171.6 / 168.2 ms |
+| M3 Max, `LZMA_IGNORE_CHECK` | 153.9 / 158.9 ms | 157.1 / 154.2 ms |
+| M4 Max, CRC64 checked | 136.5 ms | 136.8 ms |
+| M4 Max, `LZMA_IGNORE_CHECK` | 124.8 ms | 125.0 ms |
+| x86-64 Xeon (earlier session, not re-run), CRC64 checked | 143 ms | 110 ms (−23%) |
+
+- aarch64: identical within noise between versions; skipping the CRC64
+  is worth −8% to −9% on both versions (CRC64 is computed over every
+  decoded byte, with no hardware acceleration on ARM64).
+- x86-64: the −23% is the asm range decoder (plus the C tweaks). It
+  applies to the Intel slice of the universal macOS binary and to Linux
+  x86-64, not to the M-series numbers in this document.
+
+So the xz bump is worth keeping for x86-64 and for being a maintained,
+current library, but the M3/M4 gains in this PR attribute to:
+`LZMA_IGNORE_CHECK` (≈ −8–9% decode CPU), the one-shot call (no
+`BufReader` input copy, no zero-filled output) and the removed
+`Arc::from(Box<[u8]>)` copy (≈ 9.7 GiB less `memcpy`).
+
+### Why skipping the CRC64 is safe here
+
+liblzma's documentation says `LZMA_IGNORE_CHECK` should not be used
+unless the data's integrity is verified externally. It is: with
+verification on (the default), every decoded segment is SHA-256'd
+against the segment checksum from the archive before any of its bytes
+reach the filesystem, and every segment's MAC over the *compressed*
+bytes is checked concurrently (joined before the final pass). Both are
+stronger than CRC64 and cover the same bytes. With `--no-verify` there
+is no external check, so the .xz CRC64 stays on — it is then the only
+integrity check — and the SHA-256/MAC work is skipped entirely.
 
 ## Profiling build (`--features profile`)
 

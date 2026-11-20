@@ -26,17 +26,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   decode-only (`--dry-run`) is 4.4% faster on the M4 Max (4.63 → 4.43 s). With
   the new default `--readahead` the M4 Max full extract is 6.09 s (−13%
   vs 0.1.3). How:
-  * **Newer LZMA decoder.** The vendored xz-utils goes from 5.2.5 (`xz2` /
-    `lzma-sys`) to 5.8.4 (`liblzma-sys`), whose decoder is ~23% faster on a
-    16 MiB segment microbenchmark.
+  * **Newer xz-utils.** The vendored xz-utils goes from 5.2.5 (`xz2` /
+    `lzma-sys`) to 5.8.4 (`liblzma-sys`). This is a decoder speedup on
+    x86-64 only (−23% on a 16 MiB segment, from xz 5.6's assembly range
+    decoder, so for the Intel slice and Linux builds); on Apple Silicon
+    both versions run the same C decoder and decode at the same speed.
   * **One-shot decode, no redundant checksum.** Segments are decoded with a
     single `lzma_stream_buffer_decode` call into an exact-size buffer (no
     input copy through a `BufReader`, no zero-filled output). When the
     segment's SHA-256 is verified anyway (the default), liblzma's own CRC64
-    over the same bytes is skipped; `--no-verify` keeps it, since it is then
-    the only integrity check. Together: 110 → 93 ms per segment in the
-    microbenchmark. Acceptance rules are unchanged (single stream, exact
-    declared size).
+    over the same bytes is skipped (`LZMA_IGNORE_CHECK`, redundant next to
+    the SHA-256 and segment MACs); `--no-verify` keeps it, since it is then
+    the only integrity check. This is the main decode-time win on Apple
+    Silicon: −8% to −9% per segment on M3 Max and M4 Max (e.g. 136.8 →
+    125.0 ms on M4 Max), and 110 → 93 ms on x86-64. Acceptance rules are
+    unchanged (single stream, exact declared size).
   * **No second copy of every segment.** Decoders write straight into the
     `Arc<[u8]>` shared with the writers instead of building a `Vec` that
     `Arc::from` then copied into a fresh 16 MiB allocation: ~9.7 GiB less
