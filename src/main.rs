@@ -66,9 +66,6 @@ enum Commands {
         /// volumes; measured neutral-to-worse on APFS/NVMe, so off by default)
         #[arg(long)]
         prealloc: bool,
-        /// Tag extracted objects with com.apple.quarantine (macOS only)
-        #[arg(long)]
-        quarantine: bool,
         /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
         /// `libcompression` (Apple's OS-provided library; macOS only;
         /// roughly 5% faster full extracts measured on M3 Max)
@@ -96,10 +93,9 @@ fn main() -> Result<()> {
             jobs,
             writers,
             prealloc,
-            quarantine,
             decoder,
         } => extract_cmd(
-            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, quarantine, decoder,
+            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, decoder,
         ),
     }
 }
@@ -283,13 +279,9 @@ fn extract_cmd(
     jobs: Option<usize>,
     writers: Option<usize>,
     prealloc: bool,
-    quarantine: bool,
     decoder: XzDecoder,
 ) -> Result<()> {
     decoder.check_available()?;
-    if quarantine && !cfg!(target_os = "macos") {
-        anyhow::bail!("--quarantine is only meaningful on macOS");
-    }
     let t0 = std::time::Instant::now();
     let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
@@ -317,7 +309,6 @@ fn extract_cmd(
         decoders: jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2)),
         writers: writers.unwrap_or(6),
         prealloc,
-        quarantine,
         verify: !no_verify,
         decoder,
     };

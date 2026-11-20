@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Removed
+
+* The `--quarantine` extract option (macOS `com.apple.quarantine` tagging).
+
 ## 0.1.3 - 2026-11-19
 
 ### Changed

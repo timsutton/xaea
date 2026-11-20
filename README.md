@@ -81,7 +81,6 @@ Options on `extract`:
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
 | `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |
-| `--quarantine` | tag outputs with `com.apple.quarantine` (macOS only, off by default like other CLI extractors) |
 | `--json` | machine-readable summary |
 
 ## Verification & fidelity
@@ -141,8 +140,7 @@ Two small permission details:
 
 * **macOS**: primary target; fully verified against Apple artifacts.
 * **Linux**: builds and runs cleanly (`cargo build --release`); `SIGUSR1`
-  replaces `SIGINFO`, `--quarantine` is rejected, `posix_fallocate`
-  replaces `F_PREALLOCATE`. Perf tuning is macOS-first by design — pass
+  replaces `SIGINFO`, `posix_fallocate` replaces `F_PREALLOCATE`. Perf tuning is macOS-first by design — pass
   `--jobs`/`--writers` to experiment elsewhere.
 * Extraction supports **profile 0** (Xcode's: stored-compressed, signed)
   only; encrypted profiles (1–5) are parsed and verified envelope-only,

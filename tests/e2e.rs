@@ -435,52 +435,6 @@ fn evil_symlink_archives_are_refused_and_contained() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn quarantine_flag_tags_outputs() {
-    let Some((dir, _)) = synthetic("quarantine") else {
-        return;
-    };
-    let out = dir.join("q-out");
-    let run = xaea()
-        .arg("extract")
-        .arg(dir.join("archive.aea"))
-        .arg("-o")
-        .arg(&out)
-        .arg("--quarantine")
-        .output()
-        .unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    let probe = Command::new("xattr")
-        .args(["-p", "com.apple.quarantine"])
-        .arg(out.join("T/plain.txt"))
-        .output()
-        .unwrap();
-    assert!(probe.status.success(), "quarantine xattr present");
-    assert!(String::from_utf8_lossy(&probe.stdout).contains("xaea"));
-
-    // And absent without the flag.
-    let out2 = dir.join("q-off");
-    xaea()
-        .arg("extract")
-        .arg(dir.join("archive.aea"))
-        .arg("-o")
-        .arg(&out2)
-        .output()
-        .unwrap();
-    let probe2 = Command::new("xattr")
-        .args(["-p", "com.apple.quarantine"])
-        .arg(out2.join("T/plain.txt"))
-        .output()
-        .unwrap();
-    assert!(!probe2.status.success(), "no quarantine by default");
-    fs::remove_dir_all(&dir).ok();
-}
-
-#[cfg(target_os = "macos")]
-#[test]
 fn libcompression_decoder_matches_liblzma() {
     let Some((dir, _)) = synthetic("libcompression") else {
         return;

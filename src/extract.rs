@@ -70,8 +70,6 @@ pub struct Opts {
     /// Reserve each file's full length (fcntl/posix_fallocate) before the
     /// first write so APFS doesn't grow extents mid-blob.
     pub prealloc: bool,
-    /// Tag created objects with com.apple.quarantine (macOS only).
-    pub quarantine: bool,
     /// Enforce MACs, signature/chain policy and per-segment checksums
     /// (default on; `--no-verify` clears).
     pub verify: bool,
@@ -123,37 +121,6 @@ fn preallocate(f: &File, size: u64) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::from_raw_os_error(r))
     }
-}
-
-/// macOS Gatekeeper quarantine tag; no-op elsewhere (callers gate the flag).
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-fn set_quarantine(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let v = format!("{:04X};{:08X};xaea;", 0x0001, t);
-    let r = unsafe {
-        libc::setxattr(
-            path.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
-            c"com.apple.quarantine".as_ptr(),
-            v.as_ptr() as *const libc::c_void,
-            v.len(),
-            0,
-            0,
-        )
-    };
-    if r == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-fn set_quarantine(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 // ------------------------------------------------------------ status (^T)
@@ -235,7 +202,7 @@ pub fn end_status_line() {
 // ---------------------------------------------------------------- writers
 
 /// Messages to a writer thread. All filesystem *syscalls* (mkdir, open,
-/// chmod, symlink, quarantine, pwrite) happen on writer threads so the
+/// chmod, symlink, pwrite) happen on writer threads so the
 /// parser stays pure CPU + dispatch; per-writer channels are FIFO, so any
 /// ordering a path needs is guaranteed by routing that path's messages to
 /// one channel (files/links by round-robin sequence, directories by
@@ -269,7 +236,7 @@ enum Work {
 /// during the stream phase no archive symlink exists at all, so this closes
 /// the "link `x -> ..` then write `x/PWNED`" class entirely. Comparison is
 /// case-insensitive to match case-insensitive volumes.
-fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)], quarantine: bool) -> Result<()> {
+fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)]) -> Result<()> {
     let mut created: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     let lower = |p: &Path| p.as_os_str().to_string_lossy().into_owned().into_bytes();
     for (path, target) in links {
@@ -304,20 +271,12 @@ fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)], quarantine: bool) -> 
         }
         symlink(target.as_ref(), &full)
             .with_context(|| format!("symlink {} -> {}", full.display(), target))?;
-        if quarantine {
-            let _ = set_quarantine(&full);
-        }
         created.insert(lower(path));
     }
     Ok(())
 }
 
-fn writer_loop(
-    rx: Receiver<Work>,
-    root: PathBuf,
-    file_default: u32,
-    quarantine: bool,
-) -> Result<()> {
+fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<()> {
     // Open file being written; closed implicitly when the next Open (or the
     // channel end) replaces/drops it.
     let mut cur: Option<(u64, File)> = None;
@@ -327,15 +286,12 @@ fn writer_loop(
                 let full = root.join(path);
                 std::fs::create_dir_all(&full)
                     .with_context(|| format!("mkdir {}", full.display()))?;
-                if quarantine {
-                    let _ = set_quarantine(&full);
-                }
             }
             Work::Flush(ack) => {
                 cur = None; // close the open fd before acknowledging
                 let _ = ack.send(());
             }
-            Work::LinkPass(links) => link_pass(&root, &links, quarantine)?,
+            Work::LinkPass(links) => link_pass(&root, &links)?,
             Work::DirModes(modes) => {
                 for (path, mode) in modes {
                     let full = root.join(path);
@@ -363,9 +319,6 @@ fn writer_loop(
                 if mode != file_default {
                     f.set_permissions(std::fs::Permissions::from_mode(mode))
                         .with_context(|| format!("fchmod {}", full.display()))?;
-                }
-                if quarantine {
-                    let _ = set_quarantine(&full);
                 }
                 cur = Some((seq, f));
             }
@@ -738,8 +691,8 @@ fn extract_body(
     let writers: Vec<_> = wrx
         .into_iter()
         .map(|rx| {
-            let (root, q) = (opts.out.clone(), opts.quarantine);
-            thread::spawn(move || writer_loop(rx, root, file_default, q))
+            let root = opts.out.clone();
+            thread::spawn(move || writer_loop(rx, root, file_default))
         })
         .collect();
 
