@@ -31,8 +31,12 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -43,8 +47,12 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -57,8 +65,12 @@ jobs:
       - run: cargo test --locked
 
   fixture:
-    name: Real fixture
-    runs-on: ubuntu-latest
+    name: Real fixture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     # The fixture URL lives in an Actions secret, which fork PRs (and
     # Dependabot) can't read; skip the job there instead of failing.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -90,7 +102,7 @@ jobs:
           curl --fail --location --silent --show-error --retry 3 \
             --output "$AEA_FIXTURE" "$AEA_FIXTURE_URL"
       - name: Check fixture hash
-        run: echo "$AEA_FIXTURE_SHA256  $AEA_FIXTURE" | sha256sum --check
+        run: echo "$AEA_FIXTURE_SHA256  $AEA_FIXTURE" | shasum -a 256 --check
       - name: Save fixture cache
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

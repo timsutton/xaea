@@ -1,8 +1,8 @@
 name: Release
 
-# Publishes a GitHub Release with prebuilt Linux binaries (x86_64 /
-# aarch64). macOS assets are deferred: they need a macOS runner, which
-# GitHub-hosted runners don't offer for private repos (see PR notes).
+# Publishes a GitHub Release with prebuilt macOS and Linux binaries
+# (x86_64 / aarch64 each). Everything builds on one macOS runner: the
+# darwin targets natively, the Linux ones zig-cross-linked.
 #
 # To cut a release: bump `version` in Cargo.toml, commit, then
 # `git tag vX.Y.Z && git push origin vX.Y.Z`.
@@ -30,9 +30,9 @@ env:
 jobs:
   release:
     name: Build & publish
-    # The aarch64 asset is zig-cross-linked from this runner (the GoReleaser
-    # rust builder drives cargo-zigbuild), so no cross toolchain apt hacks.
-    runs-on: ubuntu-latest
+    # macOS targets build natively with cargo (Apple SDK, both archs); the
+    # Linux assets are zig-cross-linked from this runner via cargo-zigbuild.
+    runs-on: macos-latest
     permissions:
       contents: write # goreleaser creates the GitHub Release
     steps:
@@ -44,6 +44,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          # Both Apple targets (the runner is arm64) plus the Linux ones.
+          targets: x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Zig supplies the linker that cargo-zigbuild drives for aarch64.
       # Pinned as an action rather than a curl'd tarball so Renovate's
