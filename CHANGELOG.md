@@ -5,8 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Changed
+
+* **CLI:** `extract` now takes the output directory as an optional
+  positional argument (`xaea extract FILE [OUT_DIR]`) instead of the
+  required `-o/--out` flag. It defaults to the current directory, which may
+  be non-empty.
+* `extract` aborts up front, before writing anything, if one of the
+  archive's top-level entries (e.g. `Xcode.app`) already exists in the
+  output directory. This replaces the old "output dir must be empty" rule.
+
 ### Removed
 
+* The `-o/--out` option of `extract` (see above).
 * The `--quarantine` extract option (macOS `com.apple.quarantine` tagging).
 
 ## 0.1.3 - 2026-11-19

@@ -37,12 +37,14 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
-    /// Extract an AEA's payload to a directory
+    /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
     Extract {
         file: PathBuf,
-        /// Output directory (created; must not be an existing non-empty dir)
-        #[arg(short, long)]
-        out: PathBuf,
+        /// Directory to extract into (created if missing; default: the
+        /// current directory). Aborts before writing anything if the
+        /// archive's top-level entry (e.g. `Xcode.app`) already exists there.
+        #[arg(default_value = ".")]
+        out_dir: PathBuf,
         /// Machine-readable summary
         #[arg(long)]
         json: bool,
@@ -86,7 +88,7 @@ fn main() -> Result<()> {
         } => inspect(&file, json, verify, no_checksums, decoder),
         Commands::Extract {
             file,
-            out,
+            out_dir,
             json,
             dry_run,
             no_verify,
@@ -95,7 +97,7 @@ fn main() -> Result<()> {
             prealloc,
             decoder,
         } => extract_cmd(
-            &file, &out, json, dry_run, no_verify, jobs, writers, prealloc, decoder,
+            &file, &out_dir, json, dry_run, no_verify, jobs, writers, prealloc, decoder,
         ),
     }
 }
@@ -292,13 +294,10 @@ fn extract_cmd(
          (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
         env.profile.id()
     );
-    if !dry_run && out.exists() {
-        anyhow::ensure!(
-            out.read_dir()?.next().is_none(),
-            "output dir {} is not empty",
-            out.display()
-        );
-    }
+    // No up-front "dir must be empty" check any more: extracting into a
+    // populated directory (the cwd, by default) is fine. Collisions with
+    // the archive's own top-level entries are caught by the extractor
+    // before it writes the first byte of the colliding entry.
     // Tuned on M3 Max (16c): writers spend most of their time blocked on
     // fs syscalls, so decoders can safely oversubscribe the CPU — cores-1
     // beat every lower count in A/B runs (8.4s vs 9.1s).

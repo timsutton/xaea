@@ -63,9 +63,17 @@ issues none.
 # Inspect + fully verify (MACs, checksums, signature chain)
 xaea inspect Xcode_27.3_beta_2.aea --verify [--json] [--no-checksums]
 
-# Extract
-xaea extract Xcode_27.3_beta_2.aea -o ./Xcode-out
+# Extract into the current directory
+xaea extract Xcode_27.3_beta_2.aea
+
+# ...or into a given directory (created if missing)
+xaea extract Xcode_27.3_beta_2.aea ~/Applications
 ```
+
+The output directory may already exist and hold other files. `extract` aborts
+before writing anything if the archive's top-level entry (e.g. `Xcode.app`)
+already exists there, so it never merges into or overwrites an existing app.
+`--dry-run` runs the same check.
 
 Progress: press **Ctrl-T** (`SIGINFO`) while extracting for a one-line
 status report — segments, payload written, rate, file count. On Linux,
