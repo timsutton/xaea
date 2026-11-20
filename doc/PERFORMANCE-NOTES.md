@@ -123,7 +123,10 @@ observable difference; non-default modes always still get the call.
 `compression_decode_buffer(COMPRESSION_LZMA)` (LZMA2 in the same .xz
 container) instead of the vendored liblzma. Opt-in; liblzma stays the
 default because it is portable and its behaviour is pinned by our build.
-Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh`:
+Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh` — **against
+xz 5.2.5** (the old `xz2`/`lzma-sys` crates). The vendored liblzma is now
+xz 5.8.x via the `liblzma` crate, which decoded a 16 MiB segment ~23%
+faster in a microbenchmark (x86-64), so this comparison needs re-running:
 
 | run | liblzma | libcompression |
 |---|---|---|

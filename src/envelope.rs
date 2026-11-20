@@ -43,7 +43,7 @@ pub fn decode_xz(data: &[u8], orig: usize, dec: XzDecoder) -> Result<Vec<u8>> {
         XzDecoder::Liblzma => {
             use std::io::Read;
             let mut out = Vec::with_capacity(orig);
-            xz2::read::XzDecoder::new(data)
+            liblzma::read::XzDecoder::new(data)
                 .read_to_end(&mut out)
                 .context("xz decode")?;
             ensure!(

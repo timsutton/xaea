@@ -34,7 +34,7 @@ u32 segments_per_cluster, u8 compression, u8 checksum` + 22 B zero tail.
 Fixture: original 10,464,202,071; encarchive 2,174,613,438 (== file size —
 the `encarchive_size` check is a complete-download test); segments 16 MiB;
 256 segments/cluster; compression `'x'` = **standalone .xz container per
-segment** (LZMA2; `xz2`/`xz -d` decode each segment independently);
+segment** (LZMA2; `liblzma`/`xz -d` decode each segment independently);
 checksum 2 = SHA-256.
 
 ## Cluster geometry

@@ -19,7 +19,9 @@ x509-parser = "0.18"
 p256 = { version = "0.14", features = ["ecdsa"] }
 p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
-xz2 = { version = "0.1.7", features = ["static"] }
+# Vendored xz-utils (5.8.x), statically linked. The maintained successor of
+# xz2/lzma-sys, whose bundled xz 5.2.5 decoded ~23% slower.
+liblzma = { version = "0.4", features = ["static"] }
 signature = "3"
 ecdsa = "0.17"
 # Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;
