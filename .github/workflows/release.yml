@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes a GitHub Release with prebuilt macOS and Linux binaries
-# (x86_64 / aarch64 each). Everything builds on one macOS runner: the
+# (macOS as one universal binary; Linux x86_64 / aarch64). Everything builds on one macOS runner: the
 # darwin targets natively, the Linux ones zig-cross-linked.
 #
 # To cut a release: bump `version` in Cargo.toml, commit, then
