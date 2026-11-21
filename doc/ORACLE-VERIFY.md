@@ -41,7 +41,10 @@ Measured on the fixture above: full compare 1:52, `--fast` 1:17,
 (modes, symlinks, empty dirs, path set — no content hashes) before
 committing to the full hash. If the two tools ever name the top-level
 directory differently, point the script at the inner roots
-(`"$mine/Xcode-beta.app" "$oracle/Xcode-beta.app"`).
+(`"$mine/Xcode-beta.app" "$oracle/Xcode-beta.app"`). With `--golden` there
+is no oracle root, so the second positional argument is instead the strip
+prefix for `<mine-root>`: `verify.sh --golden FILE "$mine" ./Xcode-beta.app`
+checks a wrapped extract root against a manifest rooted inside it.
 
 `verify.sh` compares, for every path in either tree: presence (including
 empty directories), entry type, permission bits, symlink targets (the

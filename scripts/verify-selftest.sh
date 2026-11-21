@@ -76,6 +76,20 @@ run "wrapped mine root via strip"        0 "$tmp/wrapped" "$base" "./wrapper"
 run "golden matches its own tree"        0 --golden "$tmp/golden.tsv" "$tmp/same"
 run "golden catches content drift"       1 --golden "$tmp/golden.tsv" "$tmp/content"
 run "missing golden file"                2 --golden "$tmp/nope.tsv" "$tmp/same"
+# --golden + strip: with no oracle tree, the second positional argument is
+# the strip prefix, so a golden check against a wrapped extract root (mine/
+# wrapper/... vs a manifest rooted at ...) is expressible. A prefix that
+# matches nothing must surface as a path-set diff (1), never a silent pass.
+run "golden + strip on wrapped root"     0 --golden "$tmp/golden.tsv" "$tmp/wrapped" "./wrapper"
+run "golden + strip, prefix matches nothing" \
+                                         1 --golden "$tmp/golden.tsv" "$tmp/wrapped" "./wrong"
+mkdir -p "$tmp/wrapped-drift"; copy "$tmp/wrapped-drift/wrapper"
+printf 'hello!\n' >| "$tmp/wrapped-drift/wrapper/file.txt"
+run "golden + strip catches content drift" \
+                                         1 --golden "$tmp/golden.tsv" "$tmp/wrapped-drift" "./wrapper"
+# Two extra positional arguments with --golden are ambiguous (which is the
+# strip? was an oracle root meant after all?) — reject, don't guess.
+run "golden + two extra args rejected"   2 --golden "$tmp/golden.tsv" "$tmp/same" "$base" "./same"
 # --fast must never write or read a manifest: a content-blind golden is a
 # silent pass, the exact failure mode this script exists to prevent.
 run "--fast refused with --manifest"     2 --fast --manifest "$base"
