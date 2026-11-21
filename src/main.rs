@@ -35,8 +35,8 @@ enum Commands {
         #[arg(long)]
         no_checksums: bool,
         /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only;
-        /// roughly 5% faster full extracts measured on M3 Max)
+        /// `libcompression` (Apple's OS-provided library; macOS only; the
+        /// two measure the same on full extracts)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
@@ -82,8 +82,8 @@ enum Commands {
         #[arg(long)]
         prealloc: bool,
         /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only;
-        /// roughly 5% faster full extracts measured on M3 Max)
+        /// `libcompression` (Apple's OS-provided library; macOS only; the
+        /// two measure the same on full extracts)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
         /// Store files with transparent APFS compression, as Apple's

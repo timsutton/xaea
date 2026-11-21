@@ -14,7 +14,7 @@ pub enum XzDecoder {
     #[default]
     Liblzma,
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
-    /// only; roughly 5% faster full extracts on M3 Max
+    /// only; full-extract speed is indistinguishable from liblzma
     Libcompression,
 }
 
