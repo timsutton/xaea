@@ -7,6 +7,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* CI now proves the signature checks reject bad archives, instead of only
+  that good ones pass: the test suite derives corrupt variants of its signed
+  synthetic archive — wrong signature bytes, a malformed signature, dirty
+  signature padding, a certificate chain that does not verify, a truncated
+  envelope — and requires each to be refused with a named reason and no
+  output written.
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
 * `extract --readahead N`: how many decoded segments are buffered ahead of
