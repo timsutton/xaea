@@ -9,6 +9,13 @@ name: Release
 # To cut a release: bump `version` in Cargo.toml, commit, then
 # `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow refuses to publish
 # unless the tag matches the version in Cargo.toml and Cargo.lock.
+#
+# The job runs in the `release` GitHub environment, and the signing/notarization
+# secrets live on that environment (not at repo scope), so they are delivered
+# only to runs that pass the environment's protection rules — not to every
+# workflow run in the repository. If required reviewers are enabled, every run
+# (tag releases and snapshot dispatches alike) waits at "Review deployments"
+# until approved. See "Releasing" in the README for the setup.
 
 on:
   push:
@@ -33,6 +40,11 @@ env:
 jobs:
   release:
     name: Build & publish
+    # Signing/notarization secrets are environment secrets on `release`; binding
+    # the job here is what makes them available at all (see the header note).
+    environment:
+      name: release
+      url: https://github.com/timsutton/xaea/releases
     # macOS targets build natively with cargo (Apple SDK, both archs); the
     # Linux assets are zig-cross-linked from this runner via cargo-zigbuild.
     runs-on: macos-latest
@@ -65,9 +77,12 @@ jobs:
           fi
       # Signing/notarizing is skipped by GoReleaser when the certificate secret
       # is absent, so a real release must fail here rather than quietly publish
-      # unsigned binaries. Needs: MACOS_SIGN_P12 (base64 Developer ID
-      # Application .p12), MACOS_SIGN_PASSWORD, MACOS_NOTARY_ISSUER_ID,
-      # MACOS_NOTARY_KEY_ID, MACOS_NOTARY_KEY (base64 App Store Connect .p8).
+      # unsigned binaries. Needs, as secrets on the `release` environment:
+      # MACOS_SIGN_P12 (base64 Developer ID Application .p12),
+      # MACOS_SIGN_PASSWORD, MACOS_NOTARY_ISSUER_ID, MACOS_NOTARY_KEY_ID,
+      # MACOS_NOTARY_KEY (base64 App Store Connect .p8). If the environment
+      # isn't set up (or a run can't reach it), these resolve empty and this
+      # step fails loudly instead of publishing unsigned binaries.
       - name: Require macOS signing secrets
         if: ${{ !inputs.snapshot }}
         run: |

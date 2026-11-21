@@ -209,9 +209,16 @@ The macOS binaries are signed with a Developer ID Application certificate
 and notarized by GoReleaser (`notarize` in `.goreleaser.yaml`); the workflow
 then checks the signatures of the shipped archive
 (`scripts/verify-macos-signature.sh`). A real release needs
-five repository secrets — `MACOS_SIGN_P12` (base64 `.p12`),
+five secrets — `MACOS_SIGN_P12` (base64 `.p12`),
 `MACOS_SIGN_PASSWORD`, `MACOS_NOTARY_ISSUER_ID`, `MACOS_NOTARY_KEY_ID` and
 `MACOS_NOTARY_KEY` (base64 App Store Connect `.p8`) — and fails without them.
+They live on the `release` GitHub environment (Settings → Environments), not
+at repository scope, so only runs that pass that environment's protection
+rules can see them. If required reviewers are enabled there, every release
+run — tag pushes and snapshot dispatches alike — waits at **Review
+deployments** on the run page until someone with write access (other than
+whoever triggered it) approves; a solo maintainer should instead restrict
+the environment to `main` and `v*` tags and leave reviewers off.
 Snapshot runs skip signing. A bare binary can't be stapled, so Gatekeeper
 checks the notarization ticket online the first time a quarantined copy runs.
 
