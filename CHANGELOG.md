@@ -7,6 +7,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* Documented exit codes as a stability contract: 0 success, 2 usage, 3
+  unreadable input, 4 rejected archive, 5 verification failure, 6 extraction
+  failure, 1 generic (126–128 and ≥128 stay reserved for shell/signal
+  conventions). Full table in [doc/ERROR-CODES.md](doc/ERROR-CODES.md).
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
 * `extract --readahead N`: how many decoded segments are buffered ahead of
