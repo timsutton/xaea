@@ -7,6 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* Oracle-tree verification is now a standard part of PR review:
+  `scripts/verify.sh` compares permission modes, symlink targets and empty
+  directories as well as content hashes, gains `--fast`, `--manifest` and
+  `--golden`, and fails loudly on an empty or missing oracle root instead of
+  passing vacuously. Procedure and CI policy: doc/ORACLE-VERIFY.md.
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
 * `extract --readahead N`: how many decoded segments are buffered ahead of
