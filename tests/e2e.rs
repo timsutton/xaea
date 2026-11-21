@@ -308,6 +308,57 @@ fn dry_run_matches_extract_counts() {
     fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn summary_reports_effective_core_count() {
+    let Some((dir, _man)) = synthetic("cores") else {
+        return;
+    };
+    // Same process-wide view the binary uses, so the bound is this machine's
+    // effective (not nominal) CPU count — no hardcoded core count.
+    let cpus = std::thread::available_parallelism().unwrap().get();
+
+    let run = xaea()
+        .arg("extract")
+        .arg(dir.join("archive.aea"))
+        .arg(dir.join("out"))
+        .arg("--json")
+        .output()
+        .expect("run extract --json");
+    assert!(
+        run.status.success(),
+        "extract: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stats: Value = serde_json::from_slice(&run.stdout).unwrap();
+    let cores = stats["cores"].as_u64().expect("json summary has cores");
+    assert!(cores > 0 && cores <= cpus as u64, "cores {cores} vs {cpus}");
+
+    let run = xaea()
+        .arg("extract")
+        .arg(dir.join("archive.aea"))
+        .arg(dir.join("out2"))
+        .arg("--dry-run")
+        .output()
+        .expect("run extract --dry-run");
+    assert!(
+        run.status.success(),
+        "dry run: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let line = String::from_utf8_lossy(&run.stdout);
+    assert!(line.contains(" decoders, "), "summary: {line}");
+    let n: usize = line
+        .split("writers on ")
+        .nth(1)
+        .and_then(|t| t.split(" cores").next())
+        .unwrap_or_else(|| panic!("summary lacks core count: {line}"))
+        .trim()
+        .parse()
+        .expect("core count parses");
+    assert!(n > 0 && n <= cpus, "summary cores {n} vs {cpus}");
+    fs::remove_dir_all(&dir).ok();
+}
+
 fn flip_byte(path: &Path, off: usize) {
     let mut b = fs::read(path).unwrap();
     b[off] ^= 0x01;
