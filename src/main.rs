@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use envelope::XzDecoder;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 /// xaea — fast extractor for Apple Encrypted Archives (Xcode edition)
 #[derive(Parser)]
@@ -100,9 +101,75 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+/// Process exit codes. These are part of the CLI stability contract:
+/// scripts may branch on them, so existing codes are never renumbered or
+/// repurposed. See doc/ERROR-CODES.md for the full table, the reserved
+/// ranges (126–128 and ≥128 stay off-limits: shell exec failures and
+/// signal deaths), and what adding a new code requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exit {
+    /// 1 — unclassified failure: environment or internal errors not tied
+    /// to the archive (thread spawn/panic, `available_parallelism`, JSON
+    /// serialization).
+    Generic = 1,
+    /// 2 — usage error. clap exits 2 itself on argument errors; this
+    /// variant covers option values rejected after parsing (e.g.
+    /// `--decoder libcompression` off macOS).
+    Usage = 2,
+    /// 3 — the input archive could not be read: missing path, permission
+    /// denied, input is a directory, mmap/IO failure.
+    Unreadable = 3,
+    /// 4 — the archive was read but rejected: bad magic, truncated or
+    /// malformed envelope, bad geometry, or a valid archive this command
+    /// cannot process (encrypted profile with `extract`).
+    Rejected = 4,
+    /// 5 — integrity/authenticity verification failed (`inspect --verify`:
+    /// content signature, certificate chain, MACs, checksums).
+    Verification = 5,
+    /// 6 — extraction failed: output I/O, entry collisions, decode errors,
+    /// and verification failures detected mid-extract (the streaming
+    /// extractor folds those together; use `inspect --verify` for code 5).
+    Extraction = 6,
+}
+
+/// Attaches an [`Exit`] class to an anyhow error at the `main` boundary.
+/// Display/source forward to the inner error, so stderr stays byte-identical
+/// to a plain `fn main() -> Result<()>`; classification downcasts the error
+/// chain and never inspects message text.
+#[derive(Debug)]
+struct Classified {
+    exit: Exit,
+    inner: anyhow::Error,
+}
+
+impl std::fmt::Display for Classified {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.inner, f)
+    }
+}
+
+impl std::error::Error for Classified {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
+    }
+}
+
+/// `map_err(classified(Exit::X))`: tag an error with its exit class.
+fn classified(exit: Exit) -> impl FnOnce(anyhow::Error) -> anyhow::Error {
+    move |inner| anyhow::Error::new(Classified { exit, inner })
+}
+
+/// Classified equivalent of `anyhow::bail!`.
+macro_rules! bail_exit {
+    ($exit:expr, $($arg:tt)+) => {
+        return Err(classified($exit)(anyhow::anyhow!($($arg)+)))
+    };
+}
+
+fn main() -> ExitCode {
+    // clap handles --help/--version (exit 0) and usage errors (exit 2) itself.
     let cli = Cli::parse();
-    match cli.cmd {
+    let result = match cli.cmd {
         Commands::Inspect {
             file,
             json,
@@ -144,6 +211,21 @@ fn main() -> Result<()> {
                 extract::Compress::Off
             },
         ),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            let exit = err
+                .chain()
+                .find_map(|e| e.downcast_ref::<Classified>())
+                .map_or(Exit::Generic, |c| c.exit);
+            // Print exactly what `fn main() -> Result<()>` would have.
+            match err.downcast_ref::<Classified>() {
+                Some(c) => eprintln!("Error: {:?}", c.inner),
+                None => eprintln!("Error: {err:?}"),
+            }
+            ExitCode::from(exit as u8)
+        }
     }
 }
 
@@ -165,10 +247,14 @@ fn inspect(
     no_checksums: bool,
     decoder: XzDecoder,
 ) -> Result<()> {
-    decoder.check_available()?;
-    let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
-    let env = envelope::Envelope::parse(&file)?;
+    decoder.check_available().map_err(classified(Exit::Usage))?;
+    let fstd = std::fs::File::open(path)
+        .with_context(|| format!("open {}", path.display()))
+        .map_err(classified(Exit::Unreadable))?;
+    let file = unsafe { memmap2::Mmap::map(&fstd) }
+        .context("mmap")
+        .map_err(classified(Exit::Unreadable))?;
+    let env = envelope::Envelope::parse(&file).map_err(classified(Exit::Rejected))?;
 
     let mut report_checks = Vec::new();
     let mut certs_summary = serde_json::json!(null);
@@ -184,16 +270,19 @@ fn inspect(
             .iter()
             .find(|(k, _)| k.ends_with(".signature.certificate-chain"))
             .map(|(_, v)| v.clone())
-            .context("no certificate-chain auth pair")?;
+            .context("no certificate-chain auth pair")
+            .map_err(classified(Exit::Rejected))?;
         let auth = sigverify::verify_all(
             &chain,
             sigverify::APPLE_ROOTS,
             &env.file[env.sig_off..env.sig_off + envelope::SIGNATURE_LEN],
             &env.signed_prefix(),
-        )?;
+        )
+        .map_err(classified(Exit::Verification))?;
         let mac = env
             .verify_mac(auth.certs[0].point())
-            .context("MAC verification")?;
+            .context("MAC verification")
+            .map_err(classified(Exit::Verification))?;
         integrity_ok &= mac.root_mac_ok && mac.cluster_macs_ok && mac.segmac_failed.is_empty();
         report_checks.push(serde_json::json!({
             "root_mac_ok": mac.root_mac_ok,
@@ -204,8 +293,9 @@ fn inspect(
         }));
         if !no_checksums {
             let t0 = std::time::Instant::now();
-            let (ok, failed) =
-                env.verify_checksums(std::thread::available_parallelism()?.get(), decoder)?;
+            let (ok, failed) = env
+                .verify_checksums(std::thread::available_parallelism()?.get(), decoder)
+                .map_err(classified(Exit::Verification))?;
             integrity_ok &= failed.is_empty();
             report_checks.push(serde_json::json!({
                 "checksums_ok": ok, "checksums_failed": failed,
@@ -264,7 +354,10 @@ fn inspect(
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
         if verify && !integrity_ok {
-            anyhow::bail!("verification FAILED (see checks in the JSON report)");
+            bail_exit!(
+                Exit::Verification,
+                "verification FAILED (see checks in the JSON report)"
+            );
         }
         return Ok(());
     }
@@ -311,7 +404,7 @@ fn inspect(
         }
     }
     if verify && !integrity_ok {
-        anyhow::bail!("verification FAILED (see checks above)");
+        bail_exit!(Exit::Verification, "verification FAILED (see checks above)");
     }
     Ok(())
 }
@@ -330,17 +423,23 @@ fn extract_cmd(
     decoder: XzDecoder,
     compress: extract::Compress,
 ) -> Result<()> {
-    decoder.check_available()?;
+    decoder.check_available().map_err(classified(Exit::Usage))?;
     let t0 = std::time::Instant::now();
-    let fstd = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let file = unsafe { memmap2::Mmap::map(&fstd).context("mmap")? };
-    let env = envelope::Envelope::parse(&file)?;
-    anyhow::ensure!(
-        !env.profile.encrypted(),
-        "profile {} is encrypted: extraction supports profile 0 only \
-         (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
-        env.profile.id()
-    );
+    let fstd = std::fs::File::open(path)
+        .with_context(|| format!("open {}", path.display()))
+        .map_err(classified(Exit::Unreadable))?;
+    let file = unsafe { memmap2::Mmap::map(&fstd) }
+        .context("mmap")
+        .map_err(classified(Exit::Unreadable))?;
+    let env = envelope::Envelope::parse(&file).map_err(classified(Exit::Rejected))?;
+    if env.profile.encrypted() {
+        bail_exit!(
+            Exit::Rejected,
+            "profile {} is encrypted: extraction supports profile 0 only \
+             (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
+            env.profile.id()
+        );
+    }
     // No up-front "dir must be empty" check any more: extracting into a
     // populated directory (the cwd, by default) is fine. Collisions with
     // the archive's own top-level entries are caught by the extractor
@@ -350,7 +449,10 @@ fn extract_cmd(
     // beat every lower count in A/B runs (8.4s vs 9.1s).
     let cores = std::thread::available_parallelism()?.get();
     let decoders = jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2));
-    let compress = extract::resolve_compress(out, compress, dry_run)?;
+    // Output I/O (it may create `out` to probe it), so it joins the other
+    // output-side failures under code 6.
+    let compress =
+        extract::resolve_compress(out, compress, dry_run).map_err(classified(Exit::Extraction))?;
     let opts = extract::Opts {
         out: out.to_path_buf(),
         dry: dry_run,
@@ -373,7 +475,7 @@ fn extract_cmd(
         decoder,
         compress,
     };
-    let st = extract::extract(&env, path, &opts)?;
+    let st = extract::extract(&env, path, &opts).map_err(classified(Exit::Extraction))?;
     let secs = t0.elapsed().as_secs_f64();
     let rate = st.bytes as f64 / secs / (1u64 << 20) as f64;
     if json {

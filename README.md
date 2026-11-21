@@ -12,7 +12,9 @@ The format was reverse-engineered against a real Apple artifact and
 documented (including four errata in the public spec) in
 [FORMAT-NOTES.md](doc/FORMAT-NOTES.md). The measured history behind the
 benchmarks — architecture rationale, tuning data, rejected experiments —
-is in [PERFORMANCE-NOTES.md](doc/PERFORMANCE-NOTES.md).
+is in [PERFORMANCE-NOTES.md](doc/PERFORMANCE-NOTES.md). Exit codes are a
+stability contract scripts can branch on; the full table is in
+[ERROR-CODES.md](doc/ERROR-CODES.md).
 
 ## Install
 
