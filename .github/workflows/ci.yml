@@ -69,13 +69,27 @@ jobs:
       # locally with AEA_FIXTURE=… cargo test -- --ignored.
       # The synthetic-AEA builder (scripts/make_test_aea.py) needs python3 and
       # `cryptography`. Both images carry it today, but a missing one must not
-      # let the suite skip itself into green, so install it on the off chance:
-      # --user covers macOS, the fallback covers PEP 668 on Ubuntu.
+      # let the suite skip itself into green, so install it on the off chance.
+      # The tests run python3 with `-I`, which implies `-s` (no user
+      # site-packages) and `-E` (no PYTHONPATH), so neither `pip install
+      # --user` nor a PYTHONPATH export is visible to them. A venv's own
+      # site-packages is located from the interpreter path, so it survives
+      # `-I`: install into a venv and put it first on PATH.
       - name: Ensure python `cryptography` for the synthetic AEA builder
         run: |
-          python3 -c "import cryptography" 2>/dev/null && exit 0
-          python3 -m pip install --user cryptography \
-            || python3 -m pip install --user --break-system-packages cryptography
+          if python3 -I -c "import cryptography" 2>/dev/null; then
+            echo "cryptography already importable; no venv needed"
+            exit 0
+          fi
+          python3 -m venv "$RUNNER_TEMP/aea-python"
+          "$RUNNER_TEMP/aea-python/bin/python3" -m pip install \
+            --quiet --disable-pip-version-check cryptography
+          # GITHUB_PATH only applies to later steps, so verify here with the
+          # venv interpreter directly, using the same `-I` probe the tests
+          # make — this step must not be able to pass while the tests still
+          # cannot import the package.
+          "$RUNNER_TEMP/aea-python/bin/python3" -I -c "import cryptography"
+          echo "$RUNNER_TEMP/aea-python/bin" >> "$GITHUB_PATH"
       - run: cargo test --locked
 
   fixture:
