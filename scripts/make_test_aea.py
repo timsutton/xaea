@@ -9,7 +9,7 @@ on a segment boundary, empty files, unicode + spaced + `..`-escape paths,
 symlinks, non-default modes, and a self-signed P-256 signing certificate
 whose key is bound into the main-key KDF info.
 
-Usage: make_test_aea.py OUTPUT_DIR [--seed N]
+Usage: make_test_aea.py OUTPUT_DIR [--seed N] [--evil] [--tamper]
 Writes OUT/archive.aea and OUT/manifest.json.
 """
 import argparse
@@ -413,6 +413,99 @@ def build_links(outdir: Path, seed: int, n: int) -> None:
     print(f"links.aea: {len(expect)} link records")
 
 
+def sig_field_span(file: bytes) -> tuple[int, int]:
+    """(sig_off, der_end) of the signature field in a built archive."""
+    assert file[:4] == b"AEA1", "not an AEA1 archive"
+    sig_off = 12 + int.from_bytes(file[8:12], "little")
+    field = file[sig_off:sig_off + 128]
+    assert field[0] == 0x30, "signature field does not open a DER SEQUENCE"
+    assert field[1] < 0x80, "unexpected long-form DER length in sig field"
+    der_end = sig_off + 2 + field[1]
+    assert field[2 + field[1]:] == b"\x00" * (128 - 2 - field[1]), \
+        "signature field is not zero-padded"
+    return sig_off, der_end
+
+
+def build_tamper(outdir: Path, seed: int) -> None:
+    """Corrupt variants of the signed archive, one per rejection path.
+
+    Each must be refused by `extract` (before anything is written) and by
+    `inspect --verify`, with a message naming the failure mode. The
+    expectations live in tamper.json so the Rust test stays a plain table
+    walk: `name` the file, `mode` what is broken, `expect` substrings that
+    must appear in stderr (lowercased), `check_false`/`check_true` the
+    `inspect --verify --json` checks that must be false/true, and `parses`
+    whether the envelope is still structurally parseable at all.
+    """
+    src = (outdir / "archive.aea").read_bytes()
+    sig_off, der_end = sig_field_span(src)
+    cases = []
+
+    def emit(name, data, mode, expect, check_false=(), check_true=(),
+             parses=True):
+        if data is not None:
+            (outdir / name).write_bytes(bytes(data))
+        cases.append({"name": name, "mode": mode, "expect": list(expect),
+                      "check_false": list(check_false),
+                      "check_true": list(check_true), "parses": parses})
+
+    def flip(pos, value=None):
+        b = bytearray(src)
+        b[pos] = (src[pos] ^ 0x01) if value is None else value
+        return b
+
+    # 1) Well-formed DER, wrong signature value: flip the low bit of the
+    #    last byte of INTEGER s. Structure, length and zero padding all stay
+    #    intact, so this is purely the ECDSA verify-prehash path.
+    emit("bad-sig.aea", flip(der_end - 1),
+         "signature bytes do not match the signed prefix",
+         ["signature"], ["content_signature_ok"], ["signature_padded_ok"])
+
+    # 2) Signature that opens no DER SEQUENCE: the tag is zeroed. The field
+    #    still has a sane length, so it stays reportable — the signature
+    #    fails, the padding check does not.
+    emit("bad-sig-der.aea", flip(sig_off, 0x00),
+         "signature field opens no DER SEQUENCE",
+         ["signature"], ["content_signature_ok"], ["signature_padded_ok"])
+
+    # 3) Malformed signature length: the SEQUENCE claims 127 bytes inside a
+    #    128-byte field, so the DER runs past it. A bad length here must
+    #    stay a failed check, never a panic or a fatal parse error.
+    emit("bad-sig-len.aea", flip(sig_off + 1, 0x7F),
+         "signature DER length runs past the field",
+         ["signature"], ["content_signature_ok", "signature_padded_ok"])
+
+    # 4) Genuinely valid signature, dirty zero padding after it: only the
+    #    padding check may fire.
+    emit("bad-padding.aea", flip(der_end, 0xFF),
+         "non-zero padding after the signature",
+         ["padding"], ["signature_padded_ok"], ["content_signature_ok"])
+
+    # 5) Truncated envelope: the last 4 KiB are gone, so the cluster walk
+    #    runs past EOF. Different path entirely (src/envelope.rs), and no
+    #    report is produced because parsing fails before any check runs.
+    emit("truncated.aea", src[:-4096], "archive truncated mid-cluster",
+         ["truncated"], parses=False)
+
+    # 6) Chain whose leaf was not signed by its stated issuer: a second,
+    #    unrelated self-signed certificate is appended to the chain. The
+    #    content signature stays valid (the leaf key still signs the
+    #    prefix), so only chain policy can reject this one.
+    rng = hashlib.sha256(f"xaea-test-{seed}-chain".encode()).digest()
+    key, leaf_pem, point = make_signer(rng)
+    _, other_pem, _ = make_signer(rng + b"-issuer")
+    recs = [obj("D", "app", S_IFDIR | 0o755),
+            obj("F", "app/a.txt", S_IFREG | 0o644, b"chain mismatch\n")]
+    assemble(pack_stream(recs), rng, key, leaf_pem + other_pem, point,
+             outdir / "chain-mismatch.aea")
+    emit("chain-mismatch.aea", None,
+         "certificate chain link does not verify",
+         ["chain"], ["chain_all_ok"], ["content_signature_ok"])
+
+    (outdir / "tamper.json").write_text(json.dumps({"cases": cases}, indent=1))
+    print(f"tamper: {len(cases)} corrupt variants written")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir", type=Path)
@@ -421,9 +514,13 @@ if __name__ == "__main__":
                     help="also build evil1/evil2/evil3.aea link-attack archives")
     ap.add_argument("--links", type=int, default=0, metavar="N",
                     help="also build links.aea with N link records")
+    ap.add_argument("--tamper", action="store_true",
+                    help="also build corrupt-signature variants + tamper.json")
     a = ap.parse_args()
     build(a.outdir, a.seed)
     if a.evil:
         build_evil(a.outdir, a.seed)
     if a.links:
         build_links(a.outdir, a.seed, a.links)
+    if a.tamper:
+        build_tamper(a.outdir, a.seed)

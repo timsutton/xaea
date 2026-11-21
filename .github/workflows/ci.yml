@@ -49,6 +49,11 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The synthetic-AEA tests skip when python3/`cryptography` is missing,
+    # which would silently un-test the corrupt-signature rejection paths.
+    # Require them here so a skip fails the job instead of going green.
+    env:
+      AEA_REQUIRE_SYNTHETIC: 1
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +67,15 @@ jobs:
       # The real Xcode fixture isn't in the repo, so the tests that need it
       # are #[ignore]d and stay skipped here. See README for running them
       # locally with AEA_FIXTURE=… cargo test -- --ignored.
+      # The synthetic-AEA builder (scripts/make_test_aea.py) needs python3 and
+      # `cryptography`. Both images carry it today, but a missing one must not
+      # let the suite skip itself into green, so install it on the off chance:
+      # --user covers macOS, the fallback covers PEP 668 on Ubuntu.
+      - name: Ensure python `cryptography` for the synthetic AEA builder
+        run: |
+          python3 -c "import cryptography" 2>/dev/null && exit 0
+          python3 -m pip install --user cryptography \
+            || python3 -m pip install --user --break-system-packages cryptography
       - run: cargo test --locked
 
   fixture:
