@@ -13,13 +13,16 @@
 #
 # Usage:
 #   scripts/verify.sh [options] <mine-root> [<oracle-root>] [path-strip-for-mine]
+#   scripts/verify.sh --golden FILE <mine-root> [path-strip-for-mine]
 #   scripts/verify.sh --manifest <root>
 #
 # Options:
 #   --fast          skip file-content hashes (structure, modes, targets only)
 #   --manifest      print <root>'s manifest to stdout; no comparison
 #   --golden FILE   compare <mine-root> against a committed manifest (the
-#                   oracle tree itself is then not needed)
+#                   oracle tree itself is then not needed, so the second
+#                   positional argument is the strip prefix, not an oracle
+#                   root)
 #   -h, --help      usage
 #
 # Manifest format — one tab-separated line per path, sorted by path:
@@ -39,6 +42,7 @@ die() { echo "verify.sh: $*" >&2; exit 2; }
 
 usage() {
   echo "usage: scripts/verify.sh [options] <mine-root> [<oracle-root>] [strip]"
+  echo "       scripts/verify.sh --golden FILE <mine-root> [strip]"
   echo "       scripts/verify.sh --manifest <root>"
   echo "options: --fast, --manifest, --golden FILE, -h/--help"
   echo "see the script header and doc/ORACLE-VERIFY.md for details"
@@ -75,7 +79,13 @@ case $mode in
     ;;
   compare)
     if [ -n "$golden" ]; then
-      [ -z "$oracle" ] || die "give either an oracle root or --golden, not both"
+      # With --golden there is no oracle tree, so a second positional
+      # argument can only be the strip prefix. Two extra arguments are
+      # ambiguous (which one was the strip?) — reject rather than guess.
+      if [ -n "$oracle" ] && [ -n "$strip" ]; then
+        die "--golden takes <mine-root> [strip]; got two extra arguments (no oracle root with --golden)"
+      fi
+      if [ -n "$oracle" ]; then strip=$oracle; oracle=; fi
       [ -f "$golden" ] || die "golden manifest not found: $golden"
     else
       [ -n "$oracle" ] || { usage >&2; die "missing oracle root (or --golden FILE)"; }
