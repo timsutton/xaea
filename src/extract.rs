@@ -318,7 +318,6 @@ enum Work {
 /// case-insensitive to match case-insensitive volumes.
 fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)]) -> Result<()> {
     let mut created: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-    let lower = |p: &Path| p.as_os_str().to_string_lossy().into_owned().into_bytes();
     for (path, target) in links {
         // Strict ancestors of `path`, at component boundaries.
         let mut acc: Vec<u8> = Vec::new();
@@ -364,7 +363,14 @@ fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)]) -> Result<()> {
             r = symlink(target.as_ref(), &full);
         }
         r.with_context(|| format!("symlink {} -> {}", full.display(), target))?;
-        created.insert(lower(path));
+        // `acc` is the whole path lowercased by the walk above. Inserting it
+        // directly, rather than re-deriving the key from `path`, is what makes
+        // the comparison actually case-insensitive: the old key kept the
+        // record's original spelling while the ancestor accumulator below was
+        // lowercased, so a nested pair spelled with capitals (`Payload/up`,
+        // `Payload/up/under`) never matched and the second link was created
+        // straight through the first — outside the output root.
+        created.insert(acc);
     }
     Ok(())
 }
@@ -1251,6 +1257,40 @@ mod tests {
         // Traversing a symlink created earlier in the same pass is refused.
         assert!(link_pass(&root, &[l("x", "."), l("x/y", "t5")]).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Regression: the guard compared a lowercased ancestor against a set the
+    /// records were inserted into *un*-lowercased, so a nested pair spelled
+    /// with capitals slipped through and the second link was created straight
+    /// through the first, outside the output root.
+    #[test]
+    fn guard_is_case_insensitive() {
+        let l = |p: &str| (PathBuf::from(p).into_boxed_path(), Box::<str>::from(".."));
+        for (parent, child) in [
+            ("payload/up", "payload/up/under"),
+            ("Payload/up", "Payload/up/under"),
+            ("Payload/up", "payload/up/under"),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "xaea-linkcase-{}-{}",
+                std::process::id(),
+                child.replace('/', "_")
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let err = link_pass(&root, &[l(parent), l(child)])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("traverses archive-created symlink"),
+                "{parent} + {child}: {err}"
+            );
+            assert!(
+                std::fs::symlink_metadata(root.join(child)).is_err(),
+                "{child} must not exist"
+            );
+            std::fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
