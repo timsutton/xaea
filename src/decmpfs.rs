@@ -25,6 +25,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fs::File;
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
