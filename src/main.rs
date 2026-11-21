@@ -1,4 +1,5 @@
 mod aa;
+mod decmpfs;
 mod envelope;
 mod extract;
 mod kdf;
@@ -64,7 +65,8 @@ enum Commands {
         /// Decoder threads (default: cores-1, min 2)
         #[arg(short, long)]
         jobs: Option<usize>,
-        /// Writer threads; execute all filesystem syscalls (default: 6)
+        /// Writer threads; execute all filesystem syscalls (default: 6, or
+        /// 10 when compressing, the macOS default)
         #[arg(short = 'w', long)]
         writers: Option<usize>,
         /// Decoded segments (~16 MiB each) buffered ahead of the parser
@@ -84,6 +86,17 @@ enum Commands {
         /// roughly 5% faster full extracts measured on M3 Max)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
+        /// Store files with transparent APFS compression, as Apple's
+        /// `archiveutil` does (an Xcode tree takes ~3.9 GiB on disk instead
+        /// of ~10 GiB). The default on macOS; on a volume that can't hold
+        /// compressed files, extraction quietly writes plain files instead
+        /// (with this flag given explicitly, it warns).
+        #[arg(long, overrides_with = "no_compress")]
+        compress: bool,
+        /// Write plain, uncompressed files (faster: ~8 s instead of ~12 s
+        /// for an Xcode archive on M3 Max, at 2.6× the disk space)
+        #[arg(long, overrides_with = "compress")]
+        no_compress: bool,
     },
 }
 
@@ -108,8 +121,28 @@ fn main() -> Result<()> {
             readahead,
             prealloc,
             decoder,
+            compress,
+            no_compress,
         } => extract_cmd(
-            &file, &out_dir, json, dry_run, no_verify, jobs, writers, readahead, prealloc, decoder,
+            &file,
+            &out_dir,
+            json,
+            dry_run,
+            no_verify,
+            jobs,
+            writers,
+            readahead,
+            prealloc,
+            decoder,
+            if no_compress {
+                extract::Compress::Off
+            } else if compress {
+                extract::Compress::On
+            } else if cfg!(target_os = "macos") {
+                extract::Compress::Auto
+            } else {
+                extract::Compress::Off
+            },
         ),
     }
 }
@@ -295,6 +328,7 @@ fn extract_cmd(
     readahead: Option<usize>,
     prealloc: bool,
     decoder: XzDecoder,
+    compress: extract::Compress,
 ) -> Result<()> {
     decoder.check_available()?;
     let t0 = std::time::Instant::now();
@@ -316,11 +350,15 @@ fn extract_cmd(
     // beat every lower count in A/B runs (8.4s vs 9.1s).
     let cores = std::thread::available_parallelism()?.get();
     let decoders = jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2));
+    let compress = extract::resolve_compress(out, compress, dry_run)?;
     let opts = extract::Opts {
         out: out.to_path_buf(),
         dry: dry_run,
         decoders,
-        writers: writers.unwrap_or(6),
+        // Compressing makes writers CPU-bound (LZBITMAP runs ~350 MB/s per
+        // core), so they want more threads: on M3 Max, 6 → 13.7 s, 8 → 12.7 s,
+        // 10 → 12.6 s, 14 → 12.4 s for the Xcode 27.3 b2 archive.
+        writers: writers.unwrap_or(if compress { 10 } else { 6 }),
         readahead: readahead.unwrap_or(extract::default_readahead(
             extract::physical_ram(),
             env.segments()
@@ -333,6 +371,7 @@ fn extract_cmd(
         prealloc,
         verify: !no_verify,
         decoder,
+        compress,
     };
     let st = extract::extract(&env, path, &opts)?;
     let secs = t0.elapsed().as_secs_f64();
@@ -347,7 +386,8 @@ fn extract_cmd(
                 "decoder": decoder.name(),
                 "decoders": opts.decoders, "writers": opts.writers, "readahead": opts.readahead,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
-                "bytes": st.bytes, "seconds": secs, "mib_per_s": rate,
+                "bytes": st.bytes, "compressed": st.compressed,
+                "seconds": secs, "mib_per_s": rate,
             })
         );
     } else {

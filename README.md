@@ -37,17 +37,21 @@ Xcode 27.3 beta 2 archive (2.03 GiB compressed → 9.71 GiB payload,
 30,082 dirs / 126,205 files / 11,254 links), M3 Max (16c / 128 GB), tools
 run one at a time, warm cache:
 
-| tool | time |
-|---|---|
-| **xaea** (verification on, the default) | **10.6 s** |
-| **xaea** `--no-verify` | 9.0 s |
-| unxip (same-version `.xip`, for scale) | 24.8 s |
-| Apple `archiveutil extractXcodeAEA` | 40.0 s |
+| tool | time | on disk |
+|---|---|---|
+| **xaea** (defaults: verified, compressed) | **12.1–13.2 s** | 3.86 GiB |
+| **xaea** `--no-verify` | 13.0–13.1 s | 3.86 GiB |
+| **xaea** `--no-compress` | 7.8–10.0 s | 9.99 GiB |
+| **xaea** `--no-compress --no-verify` | 8.2–8.4 s | 9.99 GiB |
+| unxip (same-version `.xip`, for scale) | 24.8 s | |
+| Apple `archiveutil extractXcodeAEA` | 38.8–40.0 s | 3.86 GiB |
 
-So full MAC + signature + checksum verification costs ~1.6 s of the run —
-the expensive segment-MAC pass runs concurrently with the decode pipeline,
-and per-segment SHA-256s are checked inline on the decoder threads, so
-verification is on by default with no meaningful speed penalty.
+Compression (the macOS default, matching what Apple's own extractor writes)
+costs ~4 s and saves ~6 GiB. Full MAC + signature + checksum verification
+costs at most ~1 s on the plain path and nothing measurable when
+compressing: the expensive segment-MAC pass runs concurrently with the
+decode pipeline, and per-segment SHA-256s are checked inline on the decoder
+threads, so verification is on by default.
 
 Design: LZMA decoder threads read segments with `pread` and decode them
 out of order; a reorder + parse thread runs the AA01 object-stream parser
@@ -88,7 +92,8 @@ Options on `extract`:
 |---|---|
 | `--no-verify` | skip all integrity/authenticity checks (trusted or damaged input only; tampering goes unnoticed) |
 | `-j/--jobs` | decoder threads (default: cores−1, min 2) |
-| `-w/--writers` | writer threads (default: 6 — optimal on APFS/NVMe) |
+| `-w/--writers` | writer threads (default: 10 when compressing, else 6 — measured optima on APFS/NVMe) |
+| `--no-compress` | write plain files. By default on macOS, files are stored with transparent APFS compression (LZBITMAP decmpfs), as Apple's `archiveutil` does: an Xcode tree takes 3.86 GiB on disk instead of 9.99 GiB, for ~50% more extraction time (12.3 s vs 8.0 s on M3 Max). On a volume that can't hold compressed files (exFAT, most network shares) plain files are written automatically; pass `--compress` to get a warning when that happens. Linux always writes plain files. |
 | `--readahead` | decoded segments (~16 MiB each) buffered ahead of the parser (default: 1/8 of RAM worth, between decoders+4 and 160 — 128 on 16 GB, 160 from 32 GB; lower it to cut peak memory, e.g. `--readahead 19` ≈ 3.2 GiB peak vs ≈ 5 GiB) |
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |

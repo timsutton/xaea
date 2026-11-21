@@ -43,6 +43,7 @@
 //! SIGINFO, the same report is available via `SIGUSR1`.
 
 use crate::aa::{Piece, Record, Sink, Stream};
+use crate::decmpfs;
 use crate::envelope::{Envelope, XzDecoder};
 use crate::prof::{self, C, K};
 use anyhow::{Context, Result, bail, ensure};
@@ -61,6 +62,9 @@ pub struct Stats {
     pub files: u64,
     pub links: u64,
     pub bytes: u64,
+    /// Files were written with transparent compression (`--compress` and a
+    /// volume that supports it).
+    pub compressed: bool,
 }
 
 /// Upper bound for the default `--readahead` (decoded segments buffered
@@ -134,6 +138,21 @@ pub struct Opts {
     pub verify: bool,
     /// LZMA implementation for segment decoding.
     pub decoder: XzDecoder,
+    /// Store files with transparent APFS compression (decmpfs, LZBITMAP),
+    /// as Apple's extractor does. Already resolved against the output
+    /// volume by [`resolve_compress`].
+    pub compress: bool,
+}
+
+/// Whether to store files compressed. Either way, a volume that can't hold
+/// compressed files (see [`decmpfs::probe`]) gets plain files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compress {
+    Off,
+    /// The macOS default: fall back silently.
+    Auto,
+    /// Asked for explicitly (`--compress`): warn when falling back.
+    On,
 }
 
 /// Effective create defaults under the current umask; matching modes skip a
@@ -274,6 +293,8 @@ enum Work {
         seq: u64,
         path: Box<Path>,
         mode: u32,
+        /// Declared length (decides whether and how to compress).
+        size: u64,
     },
     Slice {
         seq: u64,
@@ -348,11 +369,89 @@ fn link_pass(root: &Path, links: &[(Box<Path>, Box<str>)]) -> Result<()> {
     Ok(())
 }
 
-fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<()> {
-    // Open file being written; closed implicitly when the next Open (or the
-    // channel end) replaces/drops it.
-    let mut cur: Option<(u64, File)> = None;
+/// Subtracts a message's cost from its writer's [`Load`] when dropped.
+struct Credit<'a>(&'a AtomicU64, u64);
+
+impl Drop for Credit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(self.1, Relaxed);
+    }
+}
+
+/// The file a writer is filling.
+struct OpenFile {
+    seq: u64,
+    f: File,
+    /// Data goes through the writer's encoder rather than straight to disk.
+    compressing: bool,
+    /// Mode still to apply at close. Compressed files get theirs only after
+    /// the xattrs are stored: the kernel checks xattr writes against the
+    /// file's mode, not the fd, so a 0444 file would refuse them.
+    chmod: Option<u32>,
+    path: PathBuf,
+}
+
+/// Close the writer's current file, storing it compressed first if that is
+/// how it was being written.
+fn close_file(cur: &mut Option<OpenFile>, enc: &mut Option<decmpfs::Encoder>) -> Result<()> {
+    if let Some(o) = cur.take() {
+        if o.compressing {
+            let e = enc.as_mut().context("compressing without an encoder")?;
+            prof::time(C::WStore, || e.finish(&o.f))
+                .with_context(|| format!("store compressed {}", o.path.display()))?;
+        }
+        if let Some(mode) = o.chmod {
+            prof::time(C::WFchmod, || {
+                o.f.set_permissions(std::fs::Permissions::from_mode(mode))
+            })
+            .with_context(|| format!("fchmod {}", o.path.display()))?;
+        }
+        prof::time(C::WClose, || drop(o));
+    }
+    Ok(())
+}
+
+/// Queued work per writer, in bytes still to write plus [`OPEN_COST`] per
+/// pending open. Lets the parser hand each new file to the least-loaded
+/// writer instead of round-robin, which matters when writers also compress:
+/// a writer encoding a large file would otherwise sit on a queue full of
+/// small files while the parser blocks on it and the other writers idle.
+type Load = Arc<[AtomicU64]>;
+/// What one open + close costs a writer, in bytes-of-work terms.
+const OPEN_COST: u64 = 32 << 10;
+
+fn work_cost(w: &Work) -> u64 {
+    match w {
+        Work::Open { .. } => OPEN_COST,
+        Work::Slice { piece, .. } => piece.len() as u64,
+        _ => 0,
+    }
+}
+
+/// Least-loaded writer, scanning from `start` so ties rotate.
+fn least_loaded(load: &[AtomicU64], start: usize) -> usize {
+    let n = load.len();
+    (0..n)
+        .map(|k| (start + k) % n)
+        .min_by_key(|&w| load[w].load(Relaxed))
+        .unwrap_or(0)
+}
+
+fn writer_loop(
+    rx: Receiver<Work>,
+    root: PathBuf,
+    file_default: u32,
+    compress: bool,
+    load: Option<(Load, usize)>,
+) -> Result<()> {
+    // Open file being written; closed when the next Open, a Flush, or the
+    // channel end arrives.
+    let mut cur: Option<OpenFile> = None;
+    let mut enc = compress.then(decmpfs::Encoder::new);
     while let Ok(w) = prof::time(C::WRecv, || rx.recv()) {
+        // Credited back once the message is handled (on error the whole
+        // extraction is failing anyway).
+        let _done = load.as_ref().map(|(l, i)| Credit(&l[*i], work_cost(&w)));
         match w {
             Work::Mkdir { path } => {
                 let full = root.join(path);
@@ -369,7 +468,7 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 })?;
             }
             Work::Flush(ack) => {
-                prof::time(C::WClose, || cur = None); // close the open fd before acknowledging
+                close_file(&mut cur, &mut enc)?; // finish the open file before acknowledging
                 let _ = ack.send(());
             }
             Work::LinkPass(links) => prof::time(C::WLink, || link_pass(&root, &links))?,
@@ -383,10 +482,13 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                     Ok(())
                 })?;
             }
-            Work::Open { seq, path, mode } => {
-                // Close the previous file here (rather than when `cur` is
-                // overwritten below) so the probe can attribute it.
-                prof::time(C::WClose, || cur = None);
+            Work::Open {
+                seq,
+                path,
+                mode,
+                size,
+            } => {
+                close_file(&mut cur, &mut enc)?;
                 prof::count(K::Opens, 1);
                 let full = root.join(path);
                 let open = |p: &Path| {
@@ -414,15 +516,27 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                     Err(e) => Err(e),
                 }
                 .with_context(|| format!("create {}", full.display()))?;
+                // Empty files stay plain, as Apple's extractor leaves them.
+                let compressing = size > 0 && enc.is_some();
                 // Skip fchmod when open(2) already produced the mode via the
                 // umask default — see create_defaults() for the rationale.
-                if mode != file_default {
+                let chmod = (mode != file_default).then_some(mode);
+                if !compressing && let Some(mode) = chmod {
                     prof::time(C::WFchmod, || {
                         f.set_permissions(std::fs::Permissions::from_mode(mode))
                     })
                     .with_context(|| format!("fchmod {}", full.display()))?;
                 }
-                cur = Some((seq, f));
+                if compressing && let Some(e) = enc.as_mut() {
+                    e.begin(size);
+                }
+                cur = Some(OpenFile {
+                    seq,
+                    f,
+                    compressing,
+                    chmod: chmod.filter(|_| compressing),
+                    path: full,
+                });
             }
             Work::Slice {
                 seq,
@@ -430,8 +544,26 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
                 piece,
                 prealloc,
             } => {
-                let (cseq, f) = cur.as_mut().context("slice for file not opened")?;
-                ensure!(*cseq == seq, "slice seq {seq} but writer is on file {cseq}");
+                let o = cur.as_mut().context("slice for file not opened")?;
+                ensure!(
+                    o.seq == seq,
+                    "slice seq {seq} but writer is on file {}",
+                    o.seq
+                );
+                let f = &o.f;
+                if o.compressing {
+                    let e = enc.as_mut().context("compressing without an encoder")?;
+                    let keep = prof::time(C::WCompress, || e.push(piece.bytes()))
+                        .with_context(|| format!("compress {}", o.path.display()))?;
+                    if !keep {
+                        // Not worth it: write what was encoded so far back
+                        // out plainly and send the rest straight to disk.
+                        prof::time(C::WStore, || e.spill(f))
+                            .with_context(|| format!("write {}", o.path.display()))?;
+                        o.compressing = false;
+                    }
+                    continue;
+                }
                 if prealloc > 0 {
                     // Allocation failure isn't fatal — writes still work.
                     let _ = preallocate(f, prealloc);
@@ -448,7 +580,7 @@ fn writer_loop(rx: Receiver<Work>, root: PathBuf, file_default: u32) -> Result<(
             }
         }
     }
-    Ok(())
+    close_file(&mut cur, &mut enc)
 }
 
 // ------------------------------------------------------------ parser sink
@@ -476,6 +608,9 @@ struct DispatchSink {
     prog: Arc<Progress>,
     /// Files + links share this round-robin counter for writer selection.
     obj_seq: u64,
+    /// Per-writer queued work; when set, files go to the least-loaded
+    /// writer instead of round-robin.
+    load: Option<Load>,
     prealloc: bool,
     /// Held back for the final pass (see module docs).
     links: Vec<(Box<Path>, Box<str>)>,
@@ -533,6 +668,9 @@ impl DispatchSink {
     }
 
     fn send(&self, w: usize, work: Work) -> Result<()> {
+        if let Some(l) = &self.load {
+            l[w].fetch_add(work_cost(&work), Relaxed);
+        }
         prof::time(C::PSend, || self.txs[w].send(work))
             .context("writer channel closed (writer died?)")
     }
@@ -572,7 +710,10 @@ impl Sink for DispatchSink {
             b'F' => {
                 self.obj_seq += 1;
                 let seq = self.obj_seq;
-                let w = seq as usize % nw;
+                let w = match &self.load {
+                    Some(l) => least_loaded(l, seq as usize % nw),
+                    None => seq as usize % nw,
+                };
                 if !self.dry {
                     self.send(
                         w,
@@ -580,6 +721,7 @@ impl Sink for DispatchSink {
                             seq,
                             path: rel,
                             mode,
+                            size: rec.dat,
                         },
                     )?;
                 }
@@ -665,6 +807,30 @@ fn link_target(s: &[u8]) -> Result<String> {
 }
 
 // ---------------------------------------------------------------- driver
+
+/// Decide whether this run compresses. One probe up front decides for the
+/// whole run: a volume either stores compressed files or it doesn't
+/// (FAT/exFAT, most network shares, Linux). Creates `out` when it has to
+/// probe it. Called before the writer count is chosen, since compressing
+/// wants more writers.
+pub fn resolve_compress(out: &Path, want: Compress, dry: bool) -> Result<bool> {
+    if want == Compress::Off || dry {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(out).with_context(|| format!("mkdir {}", out.display()))?;
+    Ok(match decmpfs::probe(out) {
+        Ok(()) => true,
+        Err(e) => {
+            if want == Compress::On {
+                eprintln!(
+                    "warning: writing uncompressed files: {} can't hold compressed files ({e:#})",
+                    out.display()
+                );
+            }
+            false
+        }
+    })
+}
 
 fn read_pread(f: &File, off: u64, len: usize) -> Result<Vec<u8>> {
     let mut v = vec![0u8; len];
@@ -817,6 +983,7 @@ fn extract_body(
     if !opts.dry {
         std::fs::create_dir_all(&opts.out)?;
     }
+    let compress = opts.compress && !opts.dry;
     let ck = opts.verify.then_some(());
     let segs: Arc<Vec<SegInfo>> = Arc::new(
         env.segments()
@@ -840,11 +1007,15 @@ fn extract_body(
     let (wtx, wrx): (Vec<SyncSender<Work>>, Vec<Receiver<Work>>) = (0..nw)
         .map(|_| sync_channel::<Work>(prof::depth("XAEA_WQ", 32)))
         .unzip();
+    let load: Option<Load> = (compress || std::env::var_os("XAEA_BALANCE").is_some())
+        .then(|| (0..nw).map(|_| AtomicU64::new(0)).collect());
     let writers: Vec<_> = wrx
         .into_iter()
-        .map(|rx| {
+        .enumerate()
+        .map(|(i, rx)| {
             let root = opts.out.clone();
-            thread::spawn(move || writer_loop(rx, root, file_default))
+            let load = load.clone().map(|l| (l, i));
+            thread::spawn(move || writer_loop(rx, root, file_default, compress, load))
         })
         .collect();
 
@@ -891,9 +1062,11 @@ fn extract_body(
             files: 0,
             links: 0,
             bytes: 0,
+            compressed: compress,
         },
         prog: prog.clone(),
         obj_seq: 0,
+        load,
         prealloc: opts.prealloc,
         links: Vec::new(),
         dir_modes: Vec::new(),
@@ -963,6 +1136,7 @@ fn extract_body(
         files: sink.st.files,
         links: sink.st.links,
         bytes: sink.st.bytes,
+        compressed: sink.st.compressed,
     };
     drop(sink); // closes writer channels; writers flush and exit
 
@@ -988,6 +1162,12 @@ fn extract_body(
     }
     maybe_print_status(&prog, nseg);
     end_status_line();
+    let refused = decmpfs::REFUSED.load(Relaxed);
+    if compress && refused > 0 {
+        eprintln!(
+            "warning: the volume refused compression for {refused} files; they were written uncompressed"
+        );
+    }
     match first_err {
         Some(e) => Err(e),
         None => Ok(st),

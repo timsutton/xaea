@@ -361,6 +361,50 @@ Parallelizing the final symlink pass (0.6–0.7 s serial tail; the
 traversal check can run in the parser, creation could fan out), and
 avoiding liblzma's dictionary→output copy (~8% of decode CPU).
 
+## Compressed extraction (the macOS default)
+
+On macOS, `extract` stores files the way Apple's extractor does: decmpfs
+with LZBITMAP (layout in FORMAT-NOTES); `--no-compress` turns it off. It
+was made the default because saving ~6 GiB per Xcode install is worth ~4 s
+per extraction. Xcode 27.3 b2, M3 Max, warm cache,
+three runs each:
+
+| | time | on disk | peak RSS |
+|---|---|---|---|
+| xaea (plain) | 7.8–8.2 s | 9.99 GiB | 5.7 GiB |
+| xaea (compressed) | 12.1–12.5 s | **3.86 GiB** | 6.2 GiB |
+| `archiveutil extractXcodeAEA` | 38.8 s | 3.86 GiB | — |
+
+The output is byte-identical to the plain extraction when read back (`diff
+-r`), modes and symlinks are identical, and `codesign --verify --deep
+--strict` passes. It is ~0.1% smaller than Apple's (4,044,896 vs 4,049,568
+KiB). It has exactly Apple's 88,006 inline files, but leaves ~970 more files
+plain where a fork would not save a 4 KiB block.
+
+Where the time goes. Encoding 9.7 GB at ~350 MB/s per core is ~28
+core-seconds on top of ~76 s of LZMA, so the run is CPU-bound well before
+the disk matters:
+
+* **Writer routing was the first wall.** With round-robin file routing and
+  6 writers it took 18.9 s. The parser was send-blocked 16.3 s while
+  writers sat idle for 44 thread-seconds: a writer busy encoding a large
+  file stalls its queue of small files while the others starve.
+  Least-loaded routing (queued bytes + a 32 KiB-equivalent per open)
+  brought 6 writers to 13.3–13.7 s. It is only enabled when compressing:
+  on the plain path it measured neutral (7.9–8.1 s either way).
+  `XAEA_BALANCE=1` turns it on there for experiments.
+* **Then writer count.** Writers now do CPU work, so more help, up to a
+  point: 6 → 13.7 s, 8 → 12.7 s, 10 → 12.6 s, 14 → 12.4 s, 20 → 16.5 s
+  (sys time climbs). The default is 10 when compressing. Trimming decoders
+  to 12 gained another ~0.4 s, which is within noise, so not adopted.
+* Files that don't compress are detected early: after 2 MiB with < 2%
+  saved, the encoded part is decoded back and the rest goes straight to
+  `pwrite`. So the large `.pkg` payloads cost ~2 MiB of wasted encoding,
+  not hundreds of MiB.
+
+Not yet measured on M4 Max. Not tried: encoding in a separate pool, so
+writers stay syscall-only; LZFSE for a better ratio at half the speed.
+
 ## Re-measuring
 
 ```sh

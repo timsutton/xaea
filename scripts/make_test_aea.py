@@ -2,7 +2,7 @@
 """Build a synthetic, fully signed profile-0 AEA + expected-tree manifest.
 
 Everything the real extractor must handle is embedded on purpose:
-multi-cluster geometry (spc=2, 3 clusters), the last-cluster capacity
+multi-cluster geometry (spc=2, 4 clusters), the last-cluster capacity
 padding erratum (1 real segment padded to 2 lists), a stored (uncompressed,
 comp==orig) segment, a file whose blob spans clusters, a blob ending exactly
 on a segment boundary, empty files, unicode + spaced + `..`-escape paths,
@@ -30,7 +30,7 @@ from cryptography.x509.oid import NameOID
 
 S_IFDIR, S_IFREG, S_IFLNK = 0o040000, 0o100000, 0o120000
 SEG = 65536          # segment size
-SPC = 2              # segments per cluster (forces 3 clusters, padded last)
+SPC = 2              # segments per cluster (forces 4 clusters, padded last)
 CAP = SPC
 
 
@@ -132,6 +132,12 @@ def build_tree(rng_state: bytes) -> tuple[list[dict], list[dict]]:
     # setuid bit present in the record; extraction must strip it (the
     # manifest records the expected ON-DISK mode).
     F("T/setuid.bin", b"setuid-me\n", 0o4755, expect_mode=0o755)
+    # Read-only files: with --compress the xattrs must be written before
+    # the mode is applied (the kernel checks xattr writes against the mode).
+    # One fits inline in the decmpfs xattr, one needs a multi-chunk fork.
+    F("T/readonly.txt", b"read me\n" * 50, 0o444)
+    F("T/readonly-big.txt", b"".join(b"line %d of a compressible file\n" % i
+                                     for i in range(5000)), 0o444)
     # Blob that spans multiple segments (and thus a cluster boundary).
     F("T/big.bin", prand(rng_state + b"big", SEG * 3 + 17))
     L("T/link-rel", "sub dir/ünïcode/f.bin")
