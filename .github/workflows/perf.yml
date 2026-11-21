@@ -5,7 +5,9 @@ name: Perf
 # runners are noisy, so treat them as a trend line and a regression
 # tripwire, not as headline figures. The runner CPU model is
 # printed in each job summary; compare runs only when it matches, and
-# dispatch several runs to establish a baseline spread.
+# dispatch several runs to establish a baseline spread. The fleet really is
+# mixed (Apple M1 and M2 Pro both show up), so the regression gate below is
+# budgeted per CPU class rather than as one absolute number.
 
 on:
   pull_request:
@@ -17,7 +19,7 @@ on:
         description: Timed runs per benchmark (hyperfine --runs)
         default: "5"
       max_seconds:
-        description: Fail if mean `extract --dry-run` exceeds this (default repo variable PERF_MAX_SECONDS, else 120)
+        description: Override the time budget for mean `extract --dry-run` (seconds). Empty = the per-CPU budget table in the Enforce step.
         default: ""
       full_extract:
         description: Also benchmark a full on-disk extraction (needs ~11 GB free)
@@ -46,9 +48,12 @@ jobs:
       AEA_FIXTURE: ${{ github.workspace }}/fixtures/Xcode_27.3_beta_2.aea
       AEA_FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
       RUNS: ${{ inputs.runs || '3' }}
-      # Regression gate. Shared runners are noisy: keep this well above the
-      # observed baseline and tighten it as the baseline firms up.
-      MAX_SECONDS: ${{ inputs.max_seconds || vars.PERF_MAX_SECONDS || '120' }}
+      # Manual override only, and only ever from workflow_dispatch. The
+      # effective budget is computed in the Enforce step from a single table
+      # keyed on the runner CPU: there is no repo variable and no built-in
+      # default here, so an empty override can never silently become the
+      # limit.
+      MAX_SECONDS_OVERRIDE: ${{ inputs.max_seconds }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -151,12 +156,45 @@ jobs:
       - name: Enforce time limit
         run: |
           python3 - <<'PY'
-          import json, os, sys
-          limit = float(os.environ["MAX_SECONDS"])
+          import json, os, re, subprocess, sys
+
+          # The one place a time budget is written down. Keyed on the runner
+          # CPU because macos-latest is a mixed fleet: on the same commit an
+          # Apple M2 Pro measured 19.3-20.5 s and an Apple M1 42.6-58.1 s for
+          # this benchmark, so a single absolute number is either theater on
+          # the fast class or a flake on the slow one. Each entry is ~1.25x
+          # that class's median and ~1.10x its worst observed run. Re-derive
+          # from CI history: doc/PERFORMANCE-NOTES.md, "The CI time limit".
+          BUDGET_S = {"Apple M1": 64, "Apple M2 Pro": 28}
+
+          raw = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                               capture_output=True, text=True).stdout.strip()
+          # GitHub's macOS runners report the chip plus a virtualisation
+          # suffix — the real string is "Apple M1 (Virtual)", not "Apple M1".
+          # Key the table on the chip so it matches hosted and bare-metal
+          # runners alike; the unknown-CPU warning quotes the raw string.
+          cpu = re.sub(r"\s*\(.*\)\s*$", "", raw)
+          override = os.environ.get("MAX_SECONDS_OVERRIDE", "").strip()
+          if override:
+              try:
+                  limit, why = float(override), "workflow_dispatch override"
+              except ValueError:
+                  print(f"::error title=Bad input::max_seconds {override!r} is not a number")
+                  sys.exit(1)
+          elif cpu in BUDGET_S:
+              limit, why = float(BUDGET_S[cpu]), f"budget for {cpu}"
+          else:
+              # Unknown class (GitHub rotated the fleet): keep the loosest
+              # known budget rather than guess, and say so loudly.
+              limit = float(max(BUDGET_S.values()))
+              why = f"unrecognised runner CPU {raw!r}, loosest known budget applied"
+              print(f"::warning title=Unknown runner CPU::{why} — add {cpu!r} to BUDGET_S "
+                    f"in .github/workflows/perf.yml so this class is actually gated")
+
           rs = {r["name"]: r for r in json.load(open("perf/readonly.json"))["results"]}
           mean = rs["extract --dry-run"]["summary"]["time_wall_clock"]["mean"]
-          print(f"extract --dry-run mean {mean:.2f}s (limit {limit:g}s)")
+          print(f"extract --dry-run mean {mean:.2f}s on {cpu} (limit {limit:g}s — {why})")
           if mean > limit:
-              print(f"::error title=Perf regression::extract --dry-run took {mean:.1f}s on average, over the {limit:g}s limit")
+              print(f"::error title=Perf regression::extract --dry-run took {mean:.1f}s on average on {cpu}, over the {limit:g}s budget")
               sys.exit(1)
           PY
