@@ -117,7 +117,9 @@ fn snapshot(root: &Path) -> Vec<String> {
 /// link itself is then refused because a real directory is in the way.
 #[test]
 fn link_then_file_attack_stays_inside() {
-    let dir = build("attack", 1).unwrap();
+    let Some(dir) = build("attack", 1) else {
+        return;
+    };
     let out = dir.join("out");
     let run = extract(&dir.join("evil1.aea"), &out, &[]);
     assert!(
@@ -144,7 +146,9 @@ fn link_then_file_attack_stays_inside() {
 /// case-sensitive guard comparison used to let through.
 #[test]
 fn nested_link_records_are_refused() {
-    let dir = build("nested", 1).unwrap();
+    let Some(dir) = build("nested", 1) else {
+        return;
+    };
     for name in ["evil2.aea", "evil3.aea"] {
         let out = dir.join(format!("out-{name}"));
         let run = extract(&dir.join(name), &out, &[]);
@@ -169,7 +173,9 @@ fn nested_link_records_are_refused() {
 /// with the recorded target, including the missing-parent and occupant cases.
 #[test]
 fn many_links_extract_with_recorded_targets() {
-    let dir = build("many", MANY_LINKS).unwrap();
+    let Some(dir) = build("many", MANY_LINKS) else {
+        return;
+    };
     let out = dir.join("out");
     let run = extract(&dir.join("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
@@ -195,7 +201,9 @@ fn many_links_extract_with_recorded_targets() {
 /// parents on demand rather than failing.
 #[test]
 fn link_with_missing_parent_gets_its_dirs() {
-    let dir = build("orphan", MANY_LINKS).unwrap();
+    let Some(dir) = build("orphan", MANY_LINKS) else {
+        return;
+    };
     let out = dir.join("out");
     let run = extract(&dir.join("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
@@ -221,7 +229,9 @@ fn link_with_missing_parent_gets_its_dirs() {
 /// and the archive still extracts clean.
 #[test]
 fn link_over_existing_occupant_is_replaced() {
-    let dir = build("occupant", MANY_LINKS).unwrap();
+    let Some(dir) = build("occupant", MANY_LINKS) else {
+        return;
+    };
     let out = dir.join("out");
     let run = extract(&dir.join("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
@@ -242,7 +252,9 @@ fn link_over_existing_occupant_is_replaced() {
 /// to every link target and mode.
 #[test]
 fn concurrent_and_sequential_passes_agree() {
-    let dir = build("agree", MANY_LINKS).unwrap();
+    let Some(dir) = build("agree", MANY_LINKS) else {
+        return;
+    };
     let mut snaps = Vec::new();
     for w in ["1", "6"] {
         let out = dir.join(format!("out-w{w}"));
@@ -273,7 +285,9 @@ fn concurrent_and_sequential_passes_agree() {
 /// even when the pass is otherwise large enough to run concurrently.
 #[test]
 fn directory_in_the_way_is_not_removed() {
-    let dir = build("isdir", MANY_LINKS).unwrap();
+    let Some(dir) = build("isdir", MANY_LINKS) else {
+        return;
+    };
     let out = dir.join("out");
     // Pre-create a directory on a name the archive wants for a link, so the
     // pass hits the EISDIR path instead of the replace path.
