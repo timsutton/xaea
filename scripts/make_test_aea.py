@@ -343,8 +343,8 @@ def build(outdir: Path, seed: int) -> None:
 
 
 def build_evil(outdir: Path, seed: int) -> None:
-    """Two adversarial archives; a safe extractor must fail both, and any
-    partial writes must stay inside the output tree."""
+    """Three adversarial archives; a safe extractor must fail all of them, and
+    any partial writes must stay inside the output tree."""
     rng_state = hashlib.sha256(f"xaea-test-{seed}-evil".encode()).digest()
     key, cert_pem, point = make_signer(rng_state)
     # evil1: tar-style link attack — symlink `app/up -> ..` plus a file
@@ -360,6 +360,57 @@ def build_evil(outdir: Path, seed: int) -> None:
              obj("L", "l1/l2", S_IFLNK | 0x1ff, None, "tmp")]
     assemble(pack_stream(recs2), rng_state, key, cert_pem, point,
              outdir / "evil2.aea")
+    # evil3: the same traversal, spelled with capitals. The guard compares a
+    # lowercased ancestor against the set of links created so far; a
+    # comparison that forgot to lowercase one side (the regression this
+    # archive guards against) let `Payload/up/under` be created straight
+    # through `Payload/up` and out of the tree.
+    recs3 = [obj("L", "Payload/up", S_IFLNK | 0o777, None, ".."),
+             obj("L", "Payload/up/under", S_IFLNK | 0o777, None, "tmp")]
+    assemble(pack_stream(recs3), rng_state, key, cert_pem, point,
+             outdir / "evil3.aea")
+
+
+def build_links(outdir: Path, seed: int, n: int) -> None:
+    """Archive that exercises the final symlink pass at scale.
+
+    `n` links spread over a framework-shaped tree whose directories already
+    exist — what a real archive looks like, where the pass is pure symlink(2)
+    work — plus the shapes the pass special-cases: a link whose parent
+    directory has no record at all (mkdir -p fallback), a link whose name is
+    already occupied by a regular file (replace, not refuse), and unicode /
+    space names. No link is nested under another, so the list qualifies for
+    the concurrent path. Writes links.aea and links-manifest.json.
+    """
+    rng_state = hashlib.sha256(f"xaea-test-{seed}-links".encode()).digest()
+    key, cert_pem, point = make_signer(rng_state)
+    ndirs = max(1, min(n, 200))
+    recs, expect = [], []
+    for d in range(ndirs):
+        recs.append(obj("D", f"P/F/{d:04}/N.framework/Versions", S_IFDIR | 0o755))
+    # A regular file occupying a name a later link record wants.
+    recs.append(obj("F", "P/F/0000/occupied", S_IFREG | 0o644, b"occupant\n"))
+    for i in range(n):
+        d = i % ndirs
+        if i % 7 == 2:
+            # No D record anywhere under "orphan": the pass must create it.
+            path = f"orphan/{i % 20:02d}/missing/parent/l{i}"
+        elif i % 7 == 3:
+            path = f"P/F/{d:04}/N.framework/Versions/ünïcode l{i}"
+        elif i % 7 == 4:
+            path = f"P/F/{d:04}/N.framework/Versions/sp ace/l{i}"
+        else:
+            path = f"P/F/{d:04}/N.framework/Versions/l{i}"
+        recs.append(obj("L", path, S_IFLNK | 0o777, None, f"../../tgt/{i}"))
+        expect.append({"path": path, "target": f"../../tgt/{i}"})
+    recs.append(obj("L", "P/F/0000/occupied", S_IFLNK | 0o777, None,
+                    "now-a-link"))
+    expect.append({"path": "P/F/0000/occupied", "target": "now-a-link"})
+    assemble(pack_stream(recs), rng_state, key, cert_pem, point,
+             outdir / "links.aea")
+    (outdir / "links-manifest.json").write_text(
+        json.dumps({"links": expect}, indent=1))
+    print(f"links.aea: {len(expect)} link records")
 
 
 if __name__ == "__main__":
@@ -367,8 +418,12 @@ if __name__ == "__main__":
     ap.add_argument("outdir", type=Path)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--evil", action="store_true",
-                    help="also build evil1.aea / evil2.aea link-attack archives")
+                    help="also build evil1/evil2/evil3.aea link-attack archives")
+    ap.add_argument("--links", type=int, default=0, metavar="N",
+                    help="also build links.aea with N link records")
     a = ap.parse_args()
     build(a.outdir, a.seed)
     if a.evil:
         build_evil(a.outdir, a.seed)
+    if a.links:
+        build_links(a.outdir, a.seed, a.links)
