@@ -25,6 +25,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+* The `perf` workflow's regression gate is now a per-runner-CPU time
+  budget (64 s on Apple M1, 28 s on Apple M2 Pro) derived from measured CI
+  history, replacing one 70 s limit that was inert on faster runners.
 * Faster extraction: a full Xcode extract is roughly 5–13% faster than
   0.1.3, from leaner segment decoding and fewer filesystem calls.
 * **CLI:** `extract` now takes the output directory as an optional
