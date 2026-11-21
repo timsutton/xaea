@@ -115,7 +115,8 @@ jobs:
             --prepare "rm -rf $OUT" \
             --conclude "rm -rf $OUT" \
             --export-json perf/full.json \
-            -n "extract (on disk)" "$U extract $AEA_FIXTURE $OUT --json" \
+            -n "extract (on disk, compressed: the macOS default)" "$U extract $AEA_FIXTURE $OUT --json" \
+            -n "extract --no-compress (on disk)" "$U extract $AEA_FIXTURE $OUT --no-compress --json" \
             --output null
 
       # Throughput = payload bytes / mean wall time. The byte count and the
