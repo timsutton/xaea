@@ -25,73 +25,83 @@ enum Commands {
     /// Parse and (optionally) verify an AEA file
     #[command(visible_alias = "i")]
     Inspect {
+        /// Path to the `.aea` archive
         file: PathBuf,
-        /// Machine-readable output
+        /// Machine-readable JSON report
         #[arg(long)]
         json: bool,
-        /// Verify MACs, signatures and all segment checksums
+        /// Verify integrity and authenticity: MACs, signature chain and
+        /// all segment checksums. Exits non-zero if any check fails
         #[arg(long)]
         verify: bool,
-        /// Skip the full checksum pass when used with --verify
+        /// With --verify, skip the per-segment checksum pass (MACs and
+        /// the signature are still verified)
         #[arg(long)]
         no_checksums: bool,
-        /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only; the
-        /// two measure the same on full extracts)
+        /// Which LZMA implementation decodes segments: `liblzma`
+        /// (vendored xz-utils, the default) or `libcompression` (Apple's
+        /// OS-provided library; macOS only; the two measure the same on
+        /// full extracts)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
     },
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
+    ///
+    /// Verifies by default and exits non-zero on failure. Files already
+    /// written when a failure happens are left in place; remove them
+    /// before retrying
     #[command(visible_alias = "x")]
     Extract {
+        /// Path to the `.aea` archive
         file: PathBuf,
         /// Directory to extract into (created if missing; default: the
         /// current directory). Aborts before writing anything if the
         /// archive's top-level entry (e.g. `Xcode.app`) already exists there.
         #[arg(default_value = ".")]
         out_dir: PathBuf,
-        /// Machine-readable summary
+        /// Machine-readable JSON summary
         #[arg(long)]
         json: bool,
         /// Parse and decode everything, but write no files
         #[arg(long)]
         dry_run: bool,
-        /// Skip all integrity and authenticity checks (signature, cert chain,
-        /// MAC, checksums). Only for trusted or damaged archives: a tampered
-        /// or corrupt archive extracts silently. You can still validate the
-        /// extracted app afterwards with `codesign --verify --deep --strict`.
-        /// Verification is on by default.
+        /// Skip all integrity and authenticity checks (signature, cert
+        /// chain, MACs, checksums); they are on by default. Only for
+        /// trusted or damaged archives: a tampered or corrupt archive then
+        /// extracts silently. You can still validate the extracted app
+        /// afterwards with `codesign --verify --deep --strict`
         #[arg(long)]
         no_verify: bool,
         /// Decoder threads (default: cores-1, min 2)
         #[arg(short, long)]
         jobs: Option<usize>,
-        /// Writer threads; execute all filesystem syscalls (default: 6, or
-        /// 10 when compressing, the macOS default)
+        /// Writer threads; execute all filesystem syscalls (default: 6,
+        /// or 10 when compressing, which is the default on macOS)
         #[arg(short = 'w', long)]
         writers: Option<usize>,
-        /// Decoded segments (~16 MiB each) buffered ahead of the parser
-        /// (default: 1/8 of RAM worth, at most 160, at least decoders+4).
-        /// The start of an Xcode archive is file-heavy and filesystem-bound;
-        /// a deep buffer lets decoders run ahead meanwhile so the large-file
-        /// tail is not decode-bound afterwards. Costs memory (up to ~+2 GiB
-        /// peak vs 19); lower it on small machines.
+        /// How many decoded segments (~16 MiB each) to buffer ahead
+        /// (default: enough for 1/8 of RAM, at least decoders+4, at most
+        /// 160). A deeper buffer lets decoding run ahead during the
+        /// file-heavy start of an archive, but costs memory (160 segments
+        /// ≈ 2.5 GiB); lower it on small machines
         #[arg(long)]
         readahead: Option<usize>,
         /// Pre-reserve each file's extents before writing (helps on some
         /// volumes; measured neutral-to-worse on APFS/NVMe, so off by default)
         #[arg(long)]
         prealloc: bool,
-        /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-        /// `libcompression` (Apple's OS-provided library; macOS only; the
-        /// two measure the same on full extracts)
+        /// Which LZMA implementation decodes segments: `liblzma`
+        /// (vendored xz-utils, the default) or `libcompression` (Apple's
+        /// OS-provided library; macOS only; the two measure the same on
+        /// full extracts)
         #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
         decoder: XzDecoder,
         /// Store files with transparent APFS compression, as Apple's
         /// `archiveutil` does (an Xcode tree takes ~3.9 GiB on disk instead
         /// of ~10 GiB). The default on macOS; on a volume that can't hold
         /// compressed files, extraction quietly writes plain files instead
-        /// (with this flag given explicitly, it warns).
+        /// (passing this flag explicitly turns that fallback into a
+        /// warning).
         #[arg(long, overrides_with = "no_compress")]
         compress: bool,
         /// Write plain, uncompressed files (faster: ~8 s instead of ~12 s
