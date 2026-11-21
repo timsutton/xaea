@@ -487,6 +487,7 @@ fn extract_cmd(
                 "verified": !no_verify,
                 "decoder": decoder.name(),
                 "decoders": opts.decoders, "writers": opts.writers, "readahead": opts.readahead,
+                "cores": cores,
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "compressed": st.compressed,
                 "seconds": secs, "mib_per_s": rate,
@@ -494,7 +495,7 @@ fn extract_cmd(
         );
     } else {
         println!(
-            "{} {} dirs, {} files, {} links ({}) in {secs:.1}s ({rate:.0} MiB/s payload, {} decoders, {} writers)",
+            "{} {} dirs, {} files, {} links ({}) in {secs:.1}s ({rate:.0} MiB/s payload, {} decoders, {} writers on {} cores)",
             if dry_run { "verified" } else { "extracted" },
             st.dirs,
             st.files,
@@ -502,6 +503,7 @@ fn extract_cmd(
             human(st.bytes),
             opts.decoders,
             opts.writers,
+            cores,
         );
     }
     Ok(())
