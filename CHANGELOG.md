@@ -40,6 +40,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * The `-o/--out` option of `extract` (see above).
 * The `--quarantine` extract option (macOS `com.apple.quarantine` tagging).
 
+### Fixed
+
+* The `--decoder` help text claimed `libcompression` was "roughly 5%
+  faster". That predates APFS compression becoming the macOS default and
+  does not describe a full extract: re-measured, the two decoders are
+  indistinguishable there. The ~5% is real, but only at the decode-bound
+  `--dry-run` floor, where nothing is writing.
+
 ## 0.1.3 - 2026-11-19
 
 ### Changed
