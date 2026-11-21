@@ -71,19 +71,25 @@ jobs:
       # `cryptography`. Both images carry it today, but a missing one must not
       # let the suite skip itself into green, so install it on the off chance.
       # The tests run python3 with `-I`, which implies `-s` (no user
-      # site-packages) and `-E` (no PYTHONPATH), so neither `pip install
-      # --user` nor a PYTHONPATH export is visible to them. A venv's own
-      # site-packages is located from the interpreter path, so it survives
-      # `-I`: install into a venv and put it first on PATH.
+      # site-packages) and `-E` (no PYTHONPATH), so neither a `--user` install
+      # nor a PYTHONPATH export is visible to them. A venv's own site-packages
+      # is located from the interpreter path, so it survives `-I`: build a venv
+      # and put it first on PATH. uv rather than pip — neither runner image
+      # ships it, so it comes from the action, pinned by digest like the others
+      # in this workflow.
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
       - name: Ensure python `cryptography` for the synthetic AEA builder
         run: |
           if python3 -I -c "import cryptography" 2>/dev/null; then
             echo "cryptography already importable; no venv needed"
             exit 0
           fi
-          python3 -m venv "$RUNNER_TEMP/aea-python"
-          "$RUNNER_TEMP/aea-python/bin/python3" -m pip install \
-            --quiet --disable-pip-version-check cryptography
+          # Absolute path, so uv builds the venv on the runner's own python3
+          # instead of fetching a managed interpreter.
+          uv venv --python "$(command -v python3)" "$RUNNER_TEMP/aea-python"
+          uv pip install --python "$RUNNER_TEMP/aea-python/bin/python3" cryptography
           # GITHUB_PATH only applies to later steps, so verify here with the
           # venv interpreter directly, using the same `-I` probe the tests
           # make — this step must not be able to pass while the tests still
