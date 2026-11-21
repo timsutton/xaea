@@ -10,7 +10,7 @@ harmful on APFS.
 ## Baseline numbers
 
 Fixture: `fixtures/Xcode_27.3_beta_2.aea` — 2.03 GiB compressed →
-9.71 GiB payload (624 segments / 3 clusters), 137,459 entries
+9.71 GiB payload (624 segments / 3 clusters), 167,541 entries
 (30,082 dirs / 126,205 files / 11,254 links).
 
 Machine: M3 Max (16c / 128 GB), NVMe, APFS. Methodology: one tool at a
@@ -28,6 +28,15 @@ CI perf workflow primes the page cache with a warmup run to match).
 ≈1,000+ MiB/s of payload written. These are M3 Max numbers; the shape of
 the result (writer-bound, verification cheap) should transfer, the
 absolute seconds will not.
+
+**The xaea rows above are the v0.1.0-era baseline and predate two
+changes**, so don't quote them as current: transparent APFS compression
+became the macOS default (#48), and decoding got faster since. Re-measured
+2026-11-21 on this same machine and fixture at rev `931933a`, verification
+on throughout: **12.30 s** with compression on (the default today; ~3.9 GiB
+on disk), **8.23 s** with `--no-compress` (the plain-file output these rows
+actually describe), **4.90 s** `--dry-run`. The `--no-verify` row and the
+third-party rows were not re-run.
 
 ## The one fact that explains the architecture
 
@@ -130,27 +139,61 @@ observable difference; non-default modes always still get the call.
 `compression_decode_buffer(COMPRESSION_LZMA)` (LZMA2 in the same .xz
 container) instead of the vendored liblzma. Opt-in; liblzma stays the
 default because it is portable and its behaviour is pinned by our build.
-Measured on M3 Max, Xcode 27.3 b2 fixture, `scripts/bench.sh` — **against
-xz 5.2.5** (the old `xz2`/`lzma-sys` crates). The vendored liblzma is now
-xz 5.8.x via the `liblzma` crate, which decoded a 16 MiB segment ~23%
-faster in a microbenchmark on x86-64 only (no difference on Apple
-Silicon — see "What the xz upgrade does" below), so this comparison
-needs re-running:
+Re-measured 2026-11-21 on the same M3 Max (16c / 128 GiB), same fixture,
+rev `931933a` with vendored liblzma 5.8.x — `scripts/bench.sh`, 1 warmup
++ 7 timed runs per cell, interleaved, warm cache, load 3–6, nothing else
+running. Four cells, because APFS compression (the macOS default since
+#48) turns out to be a far bigger effect than the decoder and had to be
+controlled for:
 
-| run | liblzma | libcompression |
-|---|---|---|
-| **full extract, defaults, verify on** — the real-world number, run A (5 runs) | 9.42 ± 0.33 s | 8.97 ± 0.46 s (−4.7%) |
-| same, run B (8 runs) | 9.88 ± 0.54 s | 9.31 ± 0.30 s (−5.8%) |
-| `--dry-run`, default jobs (CPU floor) | 5.40–5.80 s, ~74 s CPU | 5.12–5.54 s, ~69 s CPU (−5%) |
-| `--dry-run --no-verify -j 2` — isolation microbenchmark, not a usage scenario | 31.0 s | 28.7 s (−8%) |
+| cell | liblzma | libcompression | Δ |
+|---|---|---|---|
+| full extract, **compression on (the default)** | 12.303 ± 0.066 s | 12.337 ± 0.071 s | +0.3% |
+| full extract, `--no-compress` | 8.227 ± 0.175 s | 8.126 ± 0.163 s | −1.2% |
+| `--dry-run` — decode+parse, no writes (the CPU floor) | 4.902 ± 0.020 s | 4.647 ± 0.012 s | **−5.2%** |
 
-The `-j 2` row exists only to isolate per-core decoder throughput: with
-two decoders and nothing else running, wall time is pure LZMA (CPU ≈
-2 × wall), free of writer/MAC-pass contention and clock-boost effects.
+Peak RSS was 5.74 / 5.66 GiB compressed, 5.33 / 5.24 raw, 3.15 / 3.06
+dry-run — libcompression marginally lighter in every cell.
 
-Read the full-extract result as "roughly 5%": the gap (0.4–0.6 s) is
-about the size of run-to-run σ, and absolute times drifted ~0.5 s
-between sessions. More runs (`scripts/bench.sh -r 20`) would tighten it.
+Those are run-to-run σ, not confidence intervals. What decides each
+comparison is the standard error of the *difference* (σ/√7, pooled):
+≈0.037 s compressed, ≈0.090 s raw, ≈0.009 s dry-run.
+
+- **On the default path the decoders are indistinguishable.** The gap is
+  0.034 s against a standard error of 0.037 s — a 95% interval of ±0.07 s.
+  The "roughly 5% faster" (≈0.6 s) this section used to claim is excluded
+  outright, not merely unproven.
+- **`--no-compress` as well, at this sample size:** −0.101 s ± 0.18 s, so
+  at most ~3% faster and consistent with zero.
+- **At the CPU floor the difference is real and unmistakable:** −0.255 s
+  against σ ≈ 0.016 s, roughly 29 standard errors. libcompression also
+  retires ~5% fewer instructions in every cell (1.02 vs 1.07 T compressed,
+  0.58 vs 0.64 T raw).
+
+So the old table was half right, and the halves are worth separating. Its
+`--dry-run` row (−5%, against xz 5.2.5) reproduces almost exactly five
+major liblzma versions later: Apple's decoder genuinely is ~5% cheaper per
+byte, and the old `-j 2` isolation row (31.0 vs 28.7 s, −8%) was pointing
+at the same real thing. What does not survive is reading that as a
+full-extract win — the old −4.7% / −5.8% full-extract rows are gone. A
+full extract is writer-bound ("The one fact that explains the
+architecture"), so a 5% cut in decode effort lands entirely inside slack
+the writers never asked the decoders to use. The advantage is real and
+invisible at the same time, which is as clean a confirmation of the
+architecture model as anyone could want: **CPU saved on a stage that is
+not the bottleneck buys nothing.**
+
+Practical reading: `--decoder` is not a speed lever. Choose it for
+provenance — the OS library instead of the vendored one — not for time.
+The lever on this machine is `--no-compress`, worth 4.1 s, a third of the
+default run.
+
+The earlier comparison also noted that vendored liblzma 5.8.x decoded a
+16 MiB segment ~23% faster than 5.2.5 in a microbenchmark on x86-64 only,
+with no difference on Apple Silicon — see "What the xz upgrade does (and
+doesn't) buy" below. That asymmetry is consistent with the dry-run row
+above barely moving (5.40–5.80 s then, 4.90 s now, across a period that
+also included the syscall offload).
 
 Two implementation details matter:
 
@@ -207,7 +250,7 @@ output proven) → chmod-skip −1.2 s → stats instrumentation → syscall
 offload **9.8 s** → jobs/writers grid **8.80 s** → cores−1 A/B **8.4 s**
 → hardening batch regressed to 13.0 s → queue-32 + concurrent segment
 MACs → **10.6 s verified / 9.0 s unverified** at v0.1.0. Every step was
-re-proven byte-identical (137,459 paths, zero diffs, permission modes
+re-proven byte-identical (167,541 paths, zero diffs, permission modes
 included) against the oracle tree with `scripts/verify.sh`.
 
 ## What the xz upgrade does (and doesn't) buy
@@ -333,9 +376,12 @@ M4 Max reference (16c, same fixture, 5–8 runs): Apple's
 extracts into the cwd) against xaea 0.1.3 6.99 s, this PR 6.61 s, and
 this PR with `--readahead 160` 6.09 s — ≈6.4× faster than Apple's tool.
 Note archiveutil's output is smaller on disk (3.9 GiB `du` vs the 9.7 GiB
-payload), i.e. it appears to apply transparent APFS compression, which
-xaea does not; the comparison is wall time to a complete tree, not
-identical work. The probes cost nothing in default builds: new build with
+payload), i.e. it applies transparent APFS compression. xaea did not at
+the time of that measurement, so the caveat then was that the two tools
+were not doing identical work. They are now — xaea compresses by default
+too (#48) — and still wins on the same M3 Max footing: 12.30 s against
+archiveutil's 40.0 s, ≈3.3×. The probes cost nothing in default builds:
+new build with
 `--readahead 19` vs the pre-probe binary, A/B in both orders, 6.61–6.65 s
 vs 6.65–6.67 s (σ ≈ 0.05–0.1 s).
 
