@@ -11,6 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   unreadable input, 4 rejected archive, 5 verification failure, 6 extraction
   failure, 1 generic (126–128 and ≥128 stay reserved for shell/signal
   conventions). Full table in [doc/ERROR-CODES.md](doc/ERROR-CODES.md).
+* Oracle-tree verification is now a standard part of PR review:
+  `scripts/verify.sh` compares permission modes, symlink targets and empty
+  directories as well as content hashes, gains `--fast`, `--manifest` and
+  `--golden`, and fails loudly on an empty or missing oracle root instead of
+  passing vacuously. Procedure and CI policy: doc/ORACLE-VERIFY.md.
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
 * `extract --readahead N`: how many decoded segments are buffered ahead of

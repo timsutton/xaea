@@ -1,0 +1,111 @@
+name: Oracle verify
+
+# Extraction fidelity, split by what CI can actually do (full analysis in
+# doc/ORACLE-VERIFY.md):
+#
+# * The comparison TOOLING is cheap and always gated. `self-test` proves
+#   scripts/verify.sh catches mode/symlink/empty-dir/content diffs and
+#   refuses empty or missing oracle roots — no fixture, no Apple tooling,
+#   no secrets, runs on fork PRs too.
+# * The oracle COMPARISON itself is a manual gate: the fixture lives behind
+#   a repo secret (fork PRs can't read it) and two ~10 GiB trees don't fit a
+#   hosted macOS runner. `manifest` is the dispatch-only half of the
+#   golden-manifest plan: it extracts with xaea and diffs against the
+#   committed golden once one exists.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same pinned compiler as ci.yml / perf.yml.
+  RUST_VERSION: 1.100.0
+
+jobs:
+  self-test:
+    name: verify.sh self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: bash scripts/verify-selftest.sh
+
+  manifest:
+    name: Extract + golden manifest (dispatch only)
+    # Dispatch-only, not a PR gate: a full extract (~10 GiB) plus the fixture
+    # is disk-tight on hosted macOS runners — the same reason perf.yml makes
+    # its full-extract an opt-in.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    env:
+      AEA_FIXTURE: ${{ github.workspace }}/fixtures/Xcode_27.3_beta_2.aea
+      AEA_FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      # Same fixture handling as ci.yml's fixture job: cache keyed on the
+      # content hash, download from the secret URL only on a miss.
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: fixtures/Xcode_27.3_beta_2.aea
+          key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
+      - name: Download fixture
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          AEA_FIXTURE_URL: ${{ secrets.AEA_FIXTURE_URL }}
+        run: |
+          mkdir -p fixtures
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$AEA_FIXTURE" "$AEA_FIXTURE_URL"
+      - name: Check fixture hash
+        run: echo "$AEA_FIXTURE_SHA256  $AEA_FIXTURE" | shasum -a 256 --check
+      - name: Save fixture cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: fixtures/Xcode_27.3_beta_2.aea
+          key: aea-fixture-${{ env.AEA_FIXTURE_SHA256 }}
+
+      - run: cargo build --release --locked
+
+      - name: Extract with xaea
+        run: |
+          df -h "$RUNNER_TEMP" .
+          target/release/xaea extract "$AEA_FIXTURE" "$RUNNER_TEMP/mine"
+
+      # What xaea currently produces. This is NOT the golden (the golden is
+      # a manifest of an archiveutil-produced tree — see doc/ORACLE-VERIFY.md);
+      # it's the candidate to diff against the golden when a check fails.
+      - name: Build xaea manifest
+        run: |
+          scripts/verify.sh --manifest "$RUNNER_TEMP/mine" \
+            | xz -9e > "xaea-manifest-${AEA_FIXTURE_SHA256:0:12}.tsv.xz"
+
+      - name: Compare against committed golden
+        run: |
+          golden="fixtures/oracle-${AEA_FIXTURE_SHA256:0:12}.tsv.xz"
+          if [ ! -f "$golden" ]; then
+            echo "::notice title=No golden manifest yet::$golden is not committed; oracle verification stays a manual gate (doc/ORACLE-VERIFY.md)."
+            exit 0
+          fi
+          xz -dc "$golden" > "$RUNNER_TEMP/golden.tsv"
+          scripts/verify.sh --golden "$RUNNER_TEMP/golden.tsv" "$RUNNER_TEMP/mine"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: xaea-manifest
+          path: xaea-manifest-*.tsv.xz
+
+      - name: Free the extracted tree
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/mine"
