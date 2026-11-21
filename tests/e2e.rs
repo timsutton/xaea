@@ -499,7 +499,7 @@ fn evil_symlink_archives_are_refused_and_contained() {
     let Some((dir, _)) = synthetic("evil") else {
         return;
     };
-    for name in ["evil1.aea", "evil2.aea"] {
+    for name in ["evil1.aea", "evil2.aea", "evil3.aea"] {
         let out = dir.join(format!("out-{name}"));
         let run = xaea()
             .arg("extract")
