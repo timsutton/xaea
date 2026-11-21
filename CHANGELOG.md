@@ -12,6 +12,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `extract --readahead N`: how many decoded segments are buffered ahead of
   the writers. The default now scales with your RAM, which speeds up large
   extractions at the cost of some memory; lower it to use less.
+* On macOS, `extract` now stores files with transparent APFS compression by
+  default, as Apple's `archiveutil` does. An Xcode install takes about
+  3.9 GiB on disk instead of about 10 GiB, and extraction takes about 50%
+  longer (still ~3× faster than `archiveutil`). `--no-compress` writes plain
+  files as before. Volumes that can't hold compressed files (exFAT, most
+  network shares) get plain files automatically; `--compress` makes that
+  fallback print a warning.
 * `profile` cargo feature (`cargo build --features profile`): prints a
   per-stage timing breakdown (`XAEA_STATS=1`) or a live timeline
   (`XAEA_TL=1`) for performance investigations. No cost when not enabled.

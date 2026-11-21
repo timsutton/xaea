@@ -34,6 +34,11 @@ pub enum C {
     WClose,
     WFchmod,
     WPwrite,
+    /// Writer: LZBITMAP-encoding file data (`--compress`).
+    WCompress,
+    /// Writer: storing a compressed file (xattrs + flag), or writing back
+    /// one that didn't compress.
+    WStore,
     /// Parser: waiting on the per-writer drain barrier.
     WFlush,
     WLink,
@@ -114,7 +119,7 @@ mod on {
         eprintln!(
             "[prof] writers (s, summed over threads): idle {:.2}  mkdir {:.2}  open {:.2} ({} opens, \
              mkdir-p fallback {:.2})  close {:.2}  fchmod {:.2}  pwrite {:.2} ({} calls, {:.2} GiB)  \
-             linkpass {:.2}  dirmodes {:.2}; drain barrier {:.2}",
+             compress {:.2}  store {:.2}  linkpass {:.2}  dirmodes {:.2}; drain barrier {:.2}",
             secs(WRecv),
             secs(WMkdir),
             secs(WOpen),
@@ -125,6 +130,8 @@ mod on {
             secs(WPwrite),
             n(K::Pwrites),
             n(K::PwriteBytes) as f64 / (1u64 << 30) as f64,
+            secs(WCompress),
+            secs(WStore),
             secs(WLink),
             secs(WDirmode),
             secs(WFlush)
@@ -155,10 +162,17 @@ mod on {
         std::thread::spawn(move || {
             const STEP: u64 = 250;
             let fs_busy = || {
-                [C::WMkdir, C::WOpen, C::WClose, C::WFchmod, C::WPwrite]
-                    .iter()
-                    .map(|&c| TIME_NS[c as usize].load(Relaxed))
-                    .sum::<u64>()
+                [
+                    C::WMkdir,
+                    C::WOpen,
+                    C::WClose,
+                    C::WFchmod,
+                    C::WPwrite,
+                    C::WStore,
+                ]
+                .iter()
+                .map(|&c| TIME_NS[c as usize].load(Relaxed))
+                .sum::<u64>()
             };
             let snap = || {
                 (

@@ -138,3 +138,46 @@ Apple's bytes), exhaustive record walk (framing exact), 100% path-set match
 vs `unxip` output of the same-version .xip, and `codesign --deep --strict`
 passing on the whole extracted app. (The .aea/.xip builds differ in 2,002
 Mach-O CMS signature blobs — Apple re-signed for the AEA distribution.)
+
+## On-disk output: what `archiveutil` writes (transparent compression)
+
+Apple's `archiveutil extractXcodeAEA` doesn't write plain files. It stores
+almost every file with APFS transparent compression (decmpfs), so the
+9.71 GiB Xcode 27.3 b2 payload takes **3.86 GiB** on disk (`du -sk`:
+4,049,568 KiB). Surveyed over its full output tree (`UF_COMPRESSED` flag +
+the `com.apple.decmpfs` xattr, read with `XATTR_SHOWCOMPRESSION`):
+
+| layout | files | notes |
+|---|---|---|
+| decmpfs **type 13** (LZBITMAP, inline in the xattr) | 88,006 | whole file in the xattr, no data blocks |
+| decmpfs **type 14** (LZBITMAP, resource fork) | 37,881 | 64 KiB chunks |
+| plain | 318 | 1 empty file plus files that don't shrink by a block (`.pkg`, `.car`, PNGs): 718 MB |
+
+The details below were all checked against that tree and by writing files
+by hand and reading them back through the kernel (`src/decmpfs.rs`):
+
+* `com.apple.decmpfs` starts with a 16-byte header: `"fpmc"`, u32 type,
+  u64 uncompressed size (LE).
+* **LZBITMAP** is libcompression's `COMPRESSION_LZBITMAP` (0x702, public
+  since macOS 12). Each encoded chunk is a raw `compression_encode_buffer`
+  stream (`"ZBM\x09"…`). It encodes ~350 MB/s per M3 Max core, about 2×
+  LZFSE (164 MB/s), for a slightly worse ratio (31.7% vs 28.6% on IDEKit).
+* **Type 14 fork** (`com.apple.ResourceFork`): `n + 1` u32 LE offsets
+  (from the fork start; the last one is the fork length), then the `n`
+  chunks, each encoding 64 KiB of the file (the last one shorter). This is
+  the same scheme as LZVN/LZFSE types 8/12.
+* **Uncompressible chunk**: `0xFF` followed by the raw bytes (a full one is
+  65,537 bytes). LZBITMAP's own fallback (+22 bytes) also decodes fine, but
+  `0xFF` is what Apple writes.
+* **Type 13 inline**: header + one chunk (encoded, or `0xFF` + raw), used
+  when it fits in **3,584 bytes** total. Apple's largest inline xattr is
+  exactly 3,584 bytes and its smallest type-14 chunk would have made 3,598.
+  So every file of ≤ 3,567 bytes ends up inline, even raw, and costs no
+  data blocks.
+* Write order: fork, then decmpfs xattr, then `fchflags(UF_COMPRESSED)`.
+  Until the flag is set the file reads as empty (the data fork stays at
+  length 0). The fork has to be written in one `fsetxattr`: positional
+  chunk-by-chunk writes worked but allocated ~2× the blocks.
+* **Gotcha:** the kernel checks xattr writes against the *file's mode*, not
+  the fd's open mode, so a 0444 file refuses `fsetxattr` with EACCES even on
+  a writable fd. Apply the mode after storing.

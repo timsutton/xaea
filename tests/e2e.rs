@@ -130,13 +130,13 @@ fn synthetic_verifies_green() {
     assert_eq!(v["format"], "AEA1");
     assert_eq!(v["profile"], 0);
     assert_eq!(v["geometry_ok"], true);
-    assert_eq!(v["segments"], 5);
-    assert_eq!(v["clusters"], 3);
+    assert_eq!(v["segments"], 7);
+    assert_eq!(v["clusters"], 4);
     assert_eq!(v["root"]["segment_size"], 65536);
     assert_eq!(check(&v, "root_mac_ok"), true);
     assert_eq!(check(&v, "cluster_macs_ok"), true);
     assert_eq!(check(&v, "segment_macs_ok"), true);
-    assert_eq!(check(&v, "checksums_ok"), 5);
+    assert_eq!(check(&v, "checksums_ok"), 7);
     assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
     assert_eq!(check(&v, "content_signature_ok"), true);
     assert_eq!(check(&v, "signature_padded_ok"), true);
@@ -147,15 +147,61 @@ fn synthetic_verifies_green() {
 
 #[test]
 fn synthetic_extract_fidelity() {
-    let Some((dir, man)) = synthetic("fidelity") else {
+    if let Some((dir, _, stats)) = extract_fidelity("fidelity", &["--no-compress"]) {
+        assert_eq!(stats["compressed"], false);
+        fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Compression is the macOS default. It must produce the identical tree
+/// (contents, modes, links), with compressible files stored compressed and
+/// the rest left plain.
+#[cfg(target_os = "macos")]
+#[test]
+fn synthetic_extract_fidelity_compressed() {
+    use std::os::macos::fs::MetadataExt;
+    let Some((dir, out, stats)) = extract_fidelity("compress", &[]) else {
         return;
     };
+    if stats["compressed"] != true {
+        eprintln!("SKIP flag checks: temp volume does not support compression");
+        fs::remove_dir_all(&dir).ok();
+        return;
+    }
+    let compressed =
+        |p: &str| fs::symlink_metadata(out.join(p)).unwrap().st_flags() & libc_uf_compressed() != 0;
+    // Inline xattr, multi-chunk resource fork, both also read-only (0444).
+    for p in [
+        "T/plain.txt",
+        "T/exec.sh",
+        "T/readonly.txt",
+        "T/readonly-big.txt",
+    ] {
+        assert!(compressed(p), "{p} should be stored compressed");
+    }
+    // Random bytes don't shrink by a block; empty files stay plain.
+    for p in ["T/big.bin", "T/empty.bin"] {
+        assert!(!compressed(p), "{p} should stay plain");
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(target_os = "macos")]
+fn libc_uf_compressed() -> u32 {
+    0x20 // UF_COMPRESSED, <sys/stat.h>
+}
+
+/// Extract the synthetic archive with `extra` flags and check the exact
+/// tree against its manifest. Returns (archive dir, output dir, stats).
+fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Value)> {
+    let (dir, man) = synthetic(tag)?;
     let out = dir.join("out");
     let run = xaea()
         .arg("extract")
         .arg(dir.join("archive.aea"))
         .arg(&out)
         .arg("--json")
+        .args(extra)
         .output()
         .expect("run extract");
     assert!(
@@ -233,7 +279,7 @@ fn synthetic_extract_fidelity() {
             .to_string_lossy(),
         "../../../SystemFrameworks"
     );
-    fs::remove_dir_all(&dir).ok();
+    Some((dir, out, stats))
 }
 
 #[test]
@@ -487,7 +533,7 @@ fn libcompression_decoder_matches_liblzma() {
         return;
     };
     let v = inspect(&dir, &["--verify", "--json", "--decoder", "libcompression"]);
-    assert_eq!(check(&v, "checksums_ok"), 5);
+    assert_eq!(check(&v, "checksums_ok"), 7);
     assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
 
     let mut trees = Vec::new();
