@@ -25,6 +25,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+* **Faster final symlink pass.** Links are still created only after every
+  file has been written, but the creations now run over `--writers` threads
+  instead of one, once the whole link list has been checked for the tar
+  link-attack pattern. On Xcode 27.3 b2 that pass goes from 0.58 s to 0.20 s
+  (~0.4 s, about 5% of a full extract). The same check is now genuinely
+  case-insensitive, as it always intended to be: a nested pair spelled with
+  capitals (`Payload/up` plus `Payload/up/under`) is now refused, where it
+  used to be created through the first link and land outside the output
+  directory the archive named.
+
 * Faster extraction: a full Xcode extract is roughly 5–13% faster than
   0.1.3, from leaner segment decoding and fewer filesystem calls.
 * **CLI:** `extract` now takes the output directory as an optional
