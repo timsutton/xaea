@@ -477,6 +477,67 @@ the disk matters:
 Not yet measured on M4 Max. Not tried: encoding in a separate pool, so
 writers stay syscall-only; LZFSE for a better ratio at half the speed.
 
+### The per-file store path measured (#67): real wall, half CPU, nothing removable
+
+Issue #67 asked whether the ~19.25 core-seconds the #61 probe attributed to
+`WStore` (the decmpfs store in `finish()`, ~125k compressed files, ~154 µs
+each — bigger than `open`) was real, and whether any of it was removable.
+The wall is real, it is not core-seconds, and none of it is removable.
+Measured on the M4 Pro mini (10P + 4E cores, 64 GiB) at `88cc811`,
+hash-verified fixture, warm cache, `caffeinate -i`; temporary probe behind
+`--features profile` (wall + `CLOCK_THREAD_CPUTIME_ID` per span, `finish`
+split from `spill`, per-syscall wall), three warm runs, spread ≤ 7% on
+every store metric (full-run wall σ ≈ 0.2 s). The CPU clock was validated
+against a non-reducible busy loop (44 ms wall read as 44 ms CPU).
+Quiescence: the series began at load 0.94 with all `md*` at 0.0%; the
+resident GUI processes (Activity Monitor, sysmond, oMLX) were sampled
+instantaneously (`top`, second sample) before and after every run and never
+exceeded 12% each. Runs taken back-to-back carry the previous run's 1-min
+load (4.4, 6.0 — self-inflicted, 15-min mean stayed ~2.1); `finish` wall
+showed no trend with it (21.35 / 20.55 / 22.09). `xctrace` failed to record
+on that machine without sudo, so the independent check is the standalone
+microbench below rather than a sampling profile.
+
+- **The wall is real.** `finish()` sums to **21.4 s across 10 writers**
+  (20.6–22.1) on an idle machine — slightly *above* the 19.25 s taken
+  under saturation. Descheduling did not inflate the headline number.
+- **It is not core-seconds.** Thread-CPU inside `finish()` is **10.7 s**;
+  the other ~half is kernel block time (APFS journal/lock waits inside
+  the syscalls). Wall-in-closure accounting overstates CPU ~1.8× here —
+  the same effect that left #66's encode figure above its throughput
+  estimate, now measured directly.
+- **`spill` is not the confounder**: decode-back + pwrite for give-up and
+  not-worth-it files totals 0.09 s across 1,286 calls.
+- **Per-syscall wall, µs/call** (126,198 finishes: 88,007 inline, 36,913
+  fork): inline `com.apple.decmpfs` xattr 97 µs (8.6 s — this write
+  *carries the file's compressed bytes*, ~1.2 KiB each);
+  `com.apple.ResourceFork` 139 µs (5.1 s, ~83 KiB each — the compressed
+  data itself); `fchflags` 39 µs (4.8 s); the 16-byte fork-path header
+  xattr 57 µs (2.1 s); `fstat` 4.3 µs (0.55 s).
+- **A 100-line microbench reproduces it without xaea.** Create + the same
+  xattr/flag sequence, 10 threads, same volume: 99 / 160 / 26 / 4 µs —
+  within 15% for the two xattr writes; `fchflags` reads lower in isolation
+  (26 vs 39 µs; the microbench's files carry lighter forks). Single-thread
+  floors: a 1 KB decmpfs xattr costs 17.5 µs where 16 B costs 6.8 and
+  3.5 KB costs 17.4 — mostly a fixed decmpfs-xattr cost, not per-byte; a
+  90 KiB fork 30 µs; `fchflags` 13 µs on a decmpfs file vs 7 µs on a plain
+  one (the kernel's compression-state transition); `fstat` 1 µs. This is
+  APFS behaviour under concurrent file creation, not our code shape.
+- **Nothing removable.** The two xattr writes *are* the data path; the
+  flag is required and must stay last (crash-safety ordering). The
+  defensive `fstat` is provably redundant — `check_top_level` blocks every
+  path by which `finish()` could see a pre-existing file, hardlinks exist
+  only in the deferred pass, and `UF_COMPRESSED` is the only flag this
+  program sets, so `fchflags(UF_COMPRESSED)` and
+  `fchflags(st_flags | UF_COMPRESSED)` are the same call — but at
+  4.3 µs × 125k ≈ 0.5 core-seconds ≈ 0.05 s of wall it sits below the
+  noise floor: technically droppable, provably worthless.
+
+The intuition that failed is "three or four syscalls can't cost 154 µs".
+Under 10-way concurrent creation on APFS they demonstrably can, and the
+dominant one is not metadata overhead at all — it is the compressed
+payload going through the xattr interface because that is what decmpfs is.
+
 ## Re-measuring
 
 ```sh
