@@ -424,7 +424,9 @@ vs 6.65–6.67 s (σ ≈ 0.05–0.1 s).
   23.6 → 18.3 s) — same-directory creates do contend — but big
   directories pin one writer and wall time gets worse (12.6 s pure;
   chunks of 2–32: 9.3–10.4 s vs 9.4 s round-robin, i.e. no gain). A
-  least-loaded variant was not tried.
+  least-loaded variant was not tried then; the spill-threshold retry of
+  exactly that idea is measured under "Directory affinity measured
+  (#46)".
 - **More writers**: see above; 4–6 is the knee.
 
 ### Not yet tried
@@ -464,7 +466,9 @@ the disk matters:
   Least-loaded routing (queued bytes + a 32 KiB-equivalent per open)
   brought 6 writers to 13.3–13.7 s. It is only enabled when compressing:
   on the plain path it measured neutral (7.9–8.1 s either way).
-  `XAEA_BALANCE=1` turns it on there for experiments.
+  `XAEA_BALANCE=1` turns it on there for experiments; re-measured
+  paired on the M4 Pro mini it is a real +0.05 s (8/8 rounds) — below
+  any bar for a default change (#46 below).
 * **Then writer count.** Writers now do CPU work, so more help, up to a
   point: 6 → 13.7 s, 8 → 12.7 s, 10 → 12.6 s, 14 → 12.4 s, 20 → 16.5 s
   (sys time climbs). The default is 10 when compressing. Trimming decoders
@@ -568,6 +572,91 @@ The intuition that failed is "three or four syscalls can't cost 154 µs".
 Under 10-way concurrent creation on APFS they demonstrably can, and the
 dominant one is not metadata overhead at all — it is the compressed
 payload going through the xattr interface because that is what decmpfs is.
+
+### Directory affinity measured (#46): the contention is real, the savings are not on the wall
+
+Issue #46 asked whether PR #38's directory-routing `open` win (16.5 →
+10.1 s summed, sys 23.6 → 18.3 s, M3 Max, pre-least-loaded) could be
+salvaged by preferring the directory's writer and spilling to the
+least-loaded one once that queue runs deep. Implemented behind
+`XAEA_ROUTE=dir[:N]`: a directory's mkdir binds it to a writer, its
+files prefer that writer while its queued work (the same byte counter
+the balancer uses) stays under N (default 1 MiB), and the binding
+survives a spill — sticky, so the directory returns to its writer when
+the queue drains. Kept in the tree, off by
+default, inert when unset; an e2e fidelity test covers the plain path
+under `XAEA_ROUTE=dir` and `dir:1`, and every routed tree measured this
+round — both modes, full fixture — was byte-identical to the unrouted
+one.
+
+Measured on the M4 Pro mini (10P + 4E, 64 GiB) — single-machine data;
+the M3 Max the issue named was unmeasurable this round. Hash-verified
+fixture, warm cache, `caffeinate -i`, advisory lock, series start gated
+at 1-min load ≤ 2.1 with all `md*` at 0.0%; the runs themselves carry
+self-inflicted 1-min load 5.5–14.5, as in #67. Interleaved with
+rotating variant order per round, paired per-round differences,
+n = 8 rounds per series. Decision rule fixed before measuring: a win
+is a paired mean ≥ 0.15 s at ≥ 3 SE with ≥ 6/8 sign agreement.
+Δ = base − variant; positive means affinity faster.
+
+Compress mode (the macOS default; base 10.998 s):
+
+| variant | Δ mean ± SE | t | rounds favoring |
+|---|---|---|---|
+| `dir:256k` | +0.000 ± 0.044 s | 0.0 | 4/8 |
+| `dir:1m` (default N) | −2.721 ± 0.036 s | −75 | 0/8 |
+| `dir:4m` | −4.016 ± 0.080 s | −50 | 0/8 |
+
+Plain mode (base 7.257 s; `bal` = `XAEA_BALANCE=1`, the load counters
+with no affinity):
+
+| variant | Δ mean ± SE | t | rounds favoring |
+|---|---|---|---|
+| `bal` | +0.025 ± 0.019 s | 1.3 | 6/8 |
+| `dir:1m` | −1.011 ± 0.043 s | −23 | 0/8 |
+| `dir:4m` | −1.437 ± 0.047 s | −30 | 0/8 |
+
+A second plain series (8 rounds, base 7.253 s) filled the grid:
+`bal` +0.053 ± 0.008 s (8/8), `dir:256k` +0.055 ± 0.011 s (8/8). The
+load counters are a real +50 ms on the plain path — consistent across
+both series — but an order of magnitude below the bar, and 256k
+affinity adds nothing on top of them.
+
+The threshold ladder reproduces #38's chunking result, and the queue
+arithmetic says why. A writer queue holds 32 messages; a file is two of
+them (Open + Slice) and the average file is ~81 KiB, so a full queue is
+~1.8 MiB of counted work. `dir:4m` can never spill — pure directory
+routing with the escape hatch welded shut — and loses 4.0 s, the same
+failure as #38's 12.6 s pure run. `dir:1m` spills only past half a full
+queue, so a hot directory ping-pongs between its writer and one other
+while the rest of the pool idles: −2.7 s. `dir:256k` spills after ~2
+queued files, restoring the full spread — and measures zero. The
+threshold that preserves parallelism is the threshold at which affinity
+barely exists.
+
+The profile build confirms the contention is real and that the wall
+does not care (plain, one profile-feature run each, summed over writer
+threads; wall there is not a timing measurement):
+
+| variant | summed `open` | `mkdir -p` fallback | writer idle | wall |
+|---|---|---|---|---|
+| base | 8.85 s | 0.98 s | 21.0 s | 7.0 s |
+| `dir:256k` | 9.05 s | 0.86 s | 21.4 s | 7.0 s |
+| `dir:1m` | 6.77 s | 0.25 s | 31.2 s | 7.9 s |
+| `dir:4m` | 6.52 s | 0.10 s | 34.8 s | 8.3 s |
+
+So the second prize is real — affinity removes ~90% of the `mkdir -p`
+fallback and a quarter of summed `open` time, reproducing #38's
+contention finding on this machine — and it is worth nothing, because
+the removed time lands in writer idle, which was already 21
+thread-seconds. Same shape as the encode-pool rejection above: time
+saved on a stage that has slack buys no wall.
+
+The intuition that failed is "contention costs a fifth of the
+filesystem-bound phase, so removing it wins a fifth." Contention costs
+summed thread-seconds, not wall: with 6–10 writers there is more than a
+fifth of slack, and the only routings that capture the savings spend
+more than they are worth in lost parallelism.
 
 ## Re-measuring
 
