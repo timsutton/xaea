@@ -662,24 +662,24 @@ fn pick_file(
     route: Option<DirRoute>,
     load: Option<&Load>,
     dirw: &mut HashMap<Vec<u8>, usize>,
-    dir: &[u8],
+    path: &[u8],
     seq: u64,
     nw: usize,
 ) -> usize {
     let start = seq as usize % nw;
     let Some(l) = load else { return start };
-    if let Some(cfg) = route {
-        match dirw.get(dir) {
-            Some(&p) if l[p].load(Relaxed) <= cfg.spill => return p,
-            Some(_) => {}
-            None => {
-                let w = least_loaded(l, start);
-                dirw.insert(dir.to_vec(), w);
-                return w;
-            }
+    let Some(cfg) = route else {
+        return least_loaded(l, start);
+    };
+    match dirw.get(dir_of(path)) {
+        Some(&p) if l[p].load(Relaxed) <= cfg.spill => p,
+        Some(_) => least_loaded(l, start),
+        None => {
+            let w = least_loaded(l, start);
+            dirw.insert(dir_of(path).to_vec(), w);
+            w
         }
     }
-    least_loaded(l, start)
 }
 
 fn writer_loop(
@@ -982,7 +982,7 @@ impl Sink for DispatchSink {
                     self.route,
                     self.load.as_ref(),
                     &mut self.dirw,
-                    dir_of(&rec.path),
+                    &rec.path,
                     seq,
                     nw,
                 );
@@ -1777,31 +1777,31 @@ mod tests {
         let route = Some(DirRoute { spill: 100 });
         let mut dirw = HashMap::new();
         // No route: round-robin without load counters, least-loaded with
-        // them — the pre-affinity behaviour, unchanged.
-        assert_eq!(pick_file(None, None, &mut dirw, b"d", 7, nw), 3);
+        // them — the pre-affinity behaviour, unchanged, and no binding.
+        assert_eq!(pick_file(None, None, &mut dirw, b"d/f", 7, nw), 3);
         load[1].store(50, Relaxed);
-        assert_eq!(pick_file(None, Some(&load), &mut dirw, b"d", 0, nw), 0);
+        assert_eq!(pick_file(None, Some(&load), &mut dirw, b"d/f", 0, nw), 0);
         assert!(dirw.is_empty(), "no route must not bind");
         // First file in a directory binds it to the writer it lands on
         // (least-loaded from the rotation start: writer 0 here).
-        let w = pick_file(route, Some(&load), &mut dirw, b"d", 0, nw);
+        let w = pick_file(route, Some(&load), &mut dirw, b"d/f1", 0, nw);
         assert_eq!((w, dirw.get(&b"d"[..])), (0, Some(&0)));
         // …and later files prefer it even when another writer is emptier,
         // as long as it stays at or under the threshold.
         load[0].store(100, Relaxed);
-        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 1, nw), 0);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d/f2", 1, nw), 0);
         // Past the threshold the file spills to the least-loaded writer and
         // the binding survives (sticky).
         load[0].store(101, Relaxed);
-        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 2, nw), 2);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d/f3", 2, nw), 2);
         assert_eq!(dirw.get(&b"d"[..]), Some(&0));
         // Once the preferred writer drains back under the threshold,
         // affinity resumes.
         load[0].store(10, Relaxed);
-        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 3, nw), 0);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d/f4", 3, nw), 0);
         // A different directory is independent and binds on its own first
         // file (least-loaded from start 0: writer 2, the only zero).
-        let w2 = pick_file(route, Some(&load), &mut dirw, b"e", 4, nw);
+        let w2 = pick_file(route, Some(&load), &mut dirw, b"e/f", 4, nw);
         assert_eq!((w2, dirw.get(&b"e"[..])), (2, Some(&2)));
     }
 
