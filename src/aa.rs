@@ -16,7 +16,7 @@
 //! record is immediately followed by its `DAT` bytes in the stream; the bytes
 //! are *not* part of the record size.
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::sync::Arc;
 
 /// A zero-copy slice of a decoded segment buffer.
@@ -43,9 +43,9 @@ pub struct Record {
     pub link: Option<Vec<u8>>,
     // Parsed but not applied: chown requires root (Apple's own CLI refuses
     // too when run unprivileged); kept for a future `--Owners` option.
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "parsed for a future --owners option")]
     pub uid: u32,
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "parsed for a future --owners option")]
     pub gid: u32,
     pub mode: u32,
     pub dat: u64,
@@ -117,8 +117,7 @@ impl<P: Sink> Stream<P> {
                     self.buf.extend_from_slice(&chunk[p..p + take]);
                     p += take;
                     if self.buf.len() == size as usize - 6 {
-                        let body = std::mem::take(&mut self.buf);
-                        let rec = parse_record(&body)?;
+                        let rec = parse_record(&self.buf)?;
                         self.buf.clear();
                         self.sink.record(&rec)?;
                         if rec.dat > 0 {
@@ -152,7 +151,7 @@ impl<P: Sink> Stream<P> {
         match self.state {
             State::Header if self.buf.is_empty() => Ok(()),
             State::Blob(0) if self.buf.is_empty() => Ok(()),
-            _ => anyhow::bail!("AA01 stream ended mid-record/mid-blob"),
+            _ => bail!("AA01 stream ended mid-record/mid-blob"),
         }
     }
 
@@ -171,56 +170,22 @@ fn parse_record(body: &[u8]) -> Result<Record> {
     while q < body.len() {
         ensure!(q + 4 <= body.len(), "truncated tag at {q}");
         let tag = &body[q..q + 4];
-        let fmt = tag[3];
-        let key = &tag[..3];
+        let (key, fmt) = (&tag[..3], tag[3]);
         q += 4;
-        let put_int = |q: &mut usize, body: &[u8], fmt: u8| -> Result<u64> {
-            let w: usize = match fmt {
-                b'1' => 1,
-                b'2' => 2,
-                b'4' => 4,
-                b'8' => 8,
-                b'A' => 2,
-                b'B' => 4,
-                b'C' => 8,
-                c => bail!("unknown int format {:?} in record", c as char),
-            };
-            ensure!(*q + w <= body.len(), "truncated int field");
-            let mut v = [0u8; 8];
-            v[..w].copy_from_slice(&body[*q..*q + w]);
-            *q += w;
-            Ok(u64::from_le_bytes(v))
-        };
-        let put_bytes = |q: &mut usize, body: &[u8], fmt: u8| -> Result<Vec<u8>> {
-            let ln: usize = match fmt {
-                b'P' => {
-                    ensure!(*q + 2 <= body.len(), "truncated len");
-                    u16::from_le_bytes([body[*q], body[*q + 1]]) as usize
-                }
-                b'p' => {
-                    ensure!(*q + 4 <= body.len(), "truncated len");
-                    u32::from_le_bytes(body[*q..*q + 4].try_into()?) as usize
-                }
-                c => bail!("unknown bytes format {:?} in record", c as char),
-            };
-            *q += if fmt == b'P' { 2 } else { 4 };
-            ensure!(*q + ln <= body.len(), "truncated bytes field");
-            let v = body[*q..*q + ln].to_vec();
-            *q += ln;
-            Ok(v)
-        };
+        // The narrowing casts keep the low bytes, as the format's own field
+        // widths (all observed values fit) do.
         match key {
-            b"TYP" => typ = Some(put_int(&mut q, body, fmt)? as u8),
-            b"PAT" => path = Some(put_bytes(&mut q, body, fmt)?),
-            b"LNK" => link = Some(put_bytes(&mut q, body, fmt)?),
-            b"UID" => uid = put_int(&mut q, body, fmt)? as u32,
-            b"GID" => gid = put_int(&mut q, body, fmt)? as u32,
-            b"MOD" => mode = put_int(&mut q, body, fmt)? as u32,
-            b"DAT" => dat = put_int(&mut q, body, fmt)?,
+            b"TYP" => typ = Some(read_int(body, &mut q, fmt)? as u8),
+            b"PAT" => path = Some(read_bytes(body, &mut q, fmt)?.to_vec()),
+            b"LNK" => link = Some(read_bytes(body, &mut q, fmt)?.to_vec()),
+            b"UID" => uid = read_int(body, &mut q, fmt)? as u32,
+            b"GID" => gid = read_int(body, &mut q, fmt)? as u32,
+            b"MOD" => mode = read_int(body, &mut q, fmt)? as u32,
+            b"DAT" => dat = read_int(body, &mut q, fmt)?,
             // Observed on file records with constant values so far; keep the
             // stream parseable whatever they hold.
             b"FLG" | b"AFT" => {
-                put_int(&mut q, body, fmt)?;
+                read_int(body, &mut q, fmt)?;
             }
             _ => bail!(
                 "unknown AA01 tag {:?}",
@@ -228,11 +193,9 @@ fn parse_record(body: &[u8]) -> Result<Record> {
             ),
         }
     }
-    let typ = typ.context_any("record without TYP")?;
-    let path = path.context_any("record without PAT")?;
     Ok(Record {
-        typ,
-        path,
+        typ: typ.context("record without TYP")?,
+        path: path.context("record without PAT")?,
         link,
         uid,
         gid,
@@ -241,14 +204,34 @@ fn parse_record(body: &[u8]) -> Result<Record> {
     })
 }
 
-// Small helper so we don't pull anyhow::Context for Option here.
-trait ContextAny<T> {
-    fn context_any(self, msg: &'static str) -> Result<T>;
+/// Read an integer field of format `fmt` at `*q`, advancing `*q`.
+fn read_int(body: &[u8], q: &mut usize, fmt: u8) -> Result<u64> {
+    let width = match fmt {
+        b'1' => 1,
+        b'2' | b'A' => 2,
+        b'4' | b'B' => 4,
+        b'8' | b'C' => 8,
+        c => bail!("unknown int format {:?} in record", c as char),
+    };
+    let field = body.get(*q..*q + width).context("truncated int field")?;
+    let mut v = [0u8; 8];
+    v[..width].copy_from_slice(field);
+    *q += width;
+    Ok(u64::from_le_bytes(v))
 }
-impl<T> ContextAny<T> for Option<T> {
-    fn context_any(self, msg: &'static str) -> Result<T> {
-        self.ok_or_else(|| anyhow::anyhow!(msg))
-    }
+
+/// Read a length-prefixed bytes field of format `fmt` (`P`: u16le length,
+/// `p`: u32le length) at `*q`, advancing `*q`.
+fn read_bytes<'a>(body: &'a [u8], q: &mut usize, fmt: u8) -> Result<&'a [u8]> {
+    let len_fmt = match fmt {
+        b'P' => b'2',
+        b'p' => b'4',
+        c => bail!("unknown bytes format {:?} in record", c as char),
+    };
+    let len = read_int(body, q, len_fmt).context("truncated len")? as usize;
+    let field = body.get(*q..*q + len).context("truncated bytes field")?;
+    *q += len;
+    Ok(field)
 }
 
 #[cfg(test)]

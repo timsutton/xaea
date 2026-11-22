@@ -5,10 +5,11 @@
 //! itself zeroed (kinnay FORMAT.md "Signature"). The signing certificate
 //! chain arrives in the auth data as PEM.
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use signature::hazmat::PrehashVerifier;
-use x509_parser::prelude::*;
+use std::fmt::Write;
+use x509_parser::prelude::{FromDer, ParsedExtension, X509Certificate};
 
 /// Vendored trust anchors (Apple Root CA – G3) for `trusted_root`.
 pub const APPLE_ROOTS: &[u8] = include_bytes!("../assets/AppleRootCA.pem");
@@ -55,7 +56,11 @@ fn short_name(der: &[u8]) -> String {
     )
 }
 fn hex(b: &[u8]) -> String {
-    b.iter().map(|c| format!("{c:02x}")).collect()
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, c| {
+            let _ = write!(s, "{c:02x}");
+            s
+        })
 }
 
 fn base64_decode(b: &[u8]) -> Result<Vec<u8>> {
@@ -100,8 +105,8 @@ struct Der<'a> {
 type Tlv = (u8, usize, usize); // tag, content_start, content_len
 
 impl<'a> Der<'a> {
-    fn new_at(b: &'a [u8], i: usize) -> Self {
-        Self { b, i }
+    fn new(b: &'a [u8]) -> Self {
+        Self { b, i: 0 }
     }
     fn tlv(&mut self) -> Result<Tlv> {
         let start = self.i;
@@ -164,20 +169,15 @@ pub struct ParsedCert {
 
 fn oid_name(b: &[u8]) -> String {
     // base128 decode for display
-    let mut out = String::new();
-    if b.is_empty() {
-        return out;
-    }
-    let first = b[0];
-    out.push_str(&(first / 40).to_string());
-    out.push('.');
-    out.push_str(&(first % 40).to_string());
+    let Some((&first, rest)) = b.split_first() else {
+        return String::new();
+    };
+    let mut out = format!("{}.{}", first / 40, first % 40);
     let mut v: u64 = 0;
-    for &c in &b[1..] {
-        v = (v << 7) | (c & 0x7f) as u64;
+    for &c in rest {
+        v = (v << 7) | u64::from(c & 0x7f);
         if c & 0x80 == 0 {
-            out.push('.');
-            out.push_str(&v.to_string());
+            let _ = write!(out, ".{v}");
             v = 0;
         }
     }
@@ -203,80 +203,96 @@ fn children(b: &[u8]) -> Result<Vec<Tlv>> {
     children_named(b, "")
 }
 fn children_named(b: &[u8], name: &str) -> Result<Vec<Tlv>> {
-    let mut d = Der::new_at(b, 0);
+    let mut d = Der::new(b);
     let mut out = Vec::new();
     while d.i < b.len() {
         let n = out.len();
         out.push(
             d.tlv()
-                .map_err(|e| anyhow!("[{name} child #{n} of {}: {}]: {e:#}", b.len(), hex(b)))?,
+                .with_context(|| format!("{name} child #{n} of {}: {}", b.len(), hex(b)))?,
         );
     }
     Ok(out)
 }
 
+/// The content bytes of `tlv` within `b`.
+fn content(b: &[u8], (_, start, len): Tlv) -> &[u8] {
+    &b[start..start + len]
+}
+
+/// Child `n` of a constructed value's children, or an error naming `what`.
+fn child(kids: &[Tlv], n: usize, what: &str) -> Result<Tlv> {
+    kids.get(n)
+        .copied()
+        .with_context(|| format!("{what}: missing"))
+}
+
+/// The payload of a BIT STRING TLV: its content minus the unused-bits octet.
+fn bit_string<'b>(b: &'b [u8], tlv: Tlv, what: &str) -> Result<&'b [u8]> {
+    ensure!(tlv.0 == 0x03, "{what} not BIT STRING");
+    content(b, tlv)
+        .split_first()
+        .map(|(_, bits)| bits)
+        .with_context(|| format!("{what}: empty BIT STRING"))
+}
+
 pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
-    let (_rest, name) = X509Certificate::from_der(der).context("x509 parse")?;
+    let (_rest, cert) = X509Certificate::from_der(der).context("x509 parse")?;
     // Own walker for exact TBS/SPKI spans.
-    let mut d = Der::new_at(der, 0);
-    let (_, cs, cl) = d
+    let mut d = Der::new(der);
+    let outer = d
         .tlv()
-        .map_err(|e| anyhow!("outer tlv (der {} bytes): {e:#}", der.len()))?;
+        .with_context(|| format!("outer tlv (der {} bytes)", der.len()))?;
     ensure!(d.i == der.len(), "cert DER has trailing garbage");
-    let inner = &der[cs..cs + cl];
+    let inner = content(der, outer);
     let top = children_named(inner, "cert")?;
     ensure!(top.len() >= 3, "cert too short");
     let (t_tag, t_cs, t_cl) = top[0];
     ensure!(t_tag == 0x30, "tbs not SEQUENCE");
     // The signature covers the *full* DER TLV of TBSCertificate, tag + length
     // prefix included; tbs is the first TLV of the outer SEQUENCE's content.
-    let tbs_full = inner[..t_cs + t_cl].to_vec();
+    let tbs_full = &inner[..t_cs + t_cl];
     let tbs_body = &tbs_full[t_cs..];
-    let (_, sa_cs, sa_cl) = top[1];
-    let sa_slice = &inner[sa_cs..sa_cs + sa_cl];
-    let sigalg_children = children(sa_slice)?;
-    let sig_alg_oid =
-        sa_slice[sigalg_children[0].1..sigalg_children[0].1 + sigalg_children[0].2].to_vec();
-    let (bs_tag, bs_cs, bs_cl) = top[2];
-    ensure!(bs_tag == 0x03, "cert signature not BIT STRING");
-    let sig = inner[bs_cs + 1..bs_cs + bs_cl].to_vec();
+    let sa_slice = content(inner, top[1]);
+    let sig_alg_oid = content(
+        sa_slice,
+        child(&children(sa_slice)?, 0, "signature algorithm")?,
+    )
+    .to_vec();
+    let sig = bit_string(inner, top[2], "cert signature")?.to_vec();
 
     // TBS fields: [0]version?, serial, sigalg, issuer, validity, subject, spki, ...
     let tc = children_named(tbs_body, "tbs")?;
-    let mut k = 0usize;
-    if tc[0].0 == 0xa0 {
-        k = 1;
-    }
+    let k = usize::from(tc.first().is_some_and(|t| t.0 == 0xa0));
     // k: serial, +1 sigalg, +2 issuer, +3 validity, +4 subject, +5 spki
-    let spki_idx = k + 5;
-    ensure!(
-        tc.len() > spki_idx && tc[spki_idx].0 == 0x30,
-        "spki not SEQUENCE"
-    );
-    let (s_cs, s_cl) = (tc[spki_idx].1, tc[spki_idx].2);
-    let spki = &tbs_body[s_cs..s_cs + s_cl];
-    let spki_der = spki.to_vec();
+    let spki_tlv = child(&tc, k + 5, "spki")?;
+    ensure!(spki_tlv.0 == 0x30, "spki not SEQUENCE");
+    let spki = content(tbs_body, spki_tlv);
     let spki_children = children_named(spki, "spki")?;
-    let alg_slice = &spki[spki_children[0].1..spki_children[0].1 + spki_children[0].2];
+    let alg_slice = content(spki, child(&spki_children, 0, "spki algorithm")?);
     let alg_children = children_named(alg_slice, "alg")?;
-    let spki_alg = alg_slice[alg_children[0].1..alg_children[0].1 + alg_children[0].2].to_vec();
-    let (pb_tag, pb_cs, pb_cl) = spki_children[1];
-    ensure!(pb_tag == 0x03, "spki pubkey not BIT STRING");
-    let point = spki[pb_cs + 1..pb_cs + pb_cl].to_vec();
+    let spki_alg = content(alg_slice, child(&alg_children, 0, "spki algorithm oid")?).to_vec();
+    let point = bit_string(
+        spki,
+        child(&spki_children, 1, "spki pubkey")?,
+        "spki pubkey",
+    )?
+    .to_vec();
 
-    let mut basic_ca = None;
-    for ext in name.extensions() {
-        if ext.oid.to_string() == "2.5.29.19" {
-            if let ParsedExtension::BasicConstraints(bc) = ext.parsed_extension() {
-                basic_ca = Some(bc.ca);
-            }
-        }
-    }
+    // basicConstraints, if present (the last one, should there be several).
+    let basic_ca = cert
+        .extensions()
+        .iter()
+        .rev()
+        .find_map(|ext| match ext.parsed_extension() {
+            ParsedExtension::BasicConstraints(bc) => Some(bc.ca),
+            _ => None,
+        });
     Ok(ParsedCert {
-        subject: name.subject.to_string(),
-        issuer: name.issuer.to_string(),
-        not_before_ts: name.validity.not_before.timestamp(),
-        not_after_ts: name.validity.not_after.timestamp(),
+        subject: cert.subject.to_string(),
+        issuer: cert.issuer.to_string(),
+        not_before_ts: cert.validity.not_before.timestamp(),
+        not_after_ts: cert.validity.not_after.timestamp(),
         basic_ca,
         sig_alg: sig_alg_label(&sig_alg_oid).to_string(),
         key_kind: if spki_alg == OID_EC_PUBLIC {
@@ -290,8 +306,8 @@ pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
         } else {
             "other"
         },
-        tbs: tbs_full,
-        spki_der,
+        tbs: tbs_full.to_vec(),
+        spki_der: spki.to_vec(),
         spki_alg,
         point,
         sig_alg_oid,
@@ -301,8 +317,9 @@ pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
 }
 
 /// Decode a DER ECDSA signature (SEQUENCE{INTEGER r, INTEGER s}) into r||s.
-fn der_to_p256_raw(der: &[u8], comp: usize) -> Result<Vec<u8>> {
-    let (t, cs, cl) = Der::new_at(der, 0).tlv()?;
+/// `comp` is the byte length of one component (32 for P-256, 48 for P-384).
+fn der_to_raw_ecdsa(der: &[u8], comp: usize) -> Result<Vec<u8>> {
+    let (t, cs, cl) = Der::new(der).tlv()?;
     ensure!(t == 0x30, "ecdsa sig not SEQUENCE");
     let body = &der[cs..cs + cl];
     let kids = children(body)?;
@@ -351,7 +368,7 @@ fn verify_with(issuer: &ParsedCert, signed: &ParsedCert) -> Result<bool> {
                 if signed.sig_alg_oid.as_slice() != OID_ECDSA_SHA256 {
                     bail!("P-256 issuer with non-SHA256 digest");
                 }
-                let raw = der_to_p256_raw(&signed.sig, 32).context("ecdsa sig der")?;
+                let raw = der_to_raw_ecdsa(&signed.sig, 32).context("ecdsa sig der")?;
                 let sig = p256::ecdsa::Signature::from_slice(&raw).context("ecdsa sig")?;
                 Ok(vk.verify_prehash(&digest, &sig).is_ok())
             }
@@ -361,7 +378,7 @@ fn verify_with(issuer: &ParsedCert, signed: &ParsedCert) -> Result<bool> {
                 if !matches!(signed.sig_alg_oid.as_slice(), OID_ECDSA_SHA384) {
                     bail!("P-384 issuer with non-SHA384 digest");
                 }
-                let raw = der_to_p256_raw(&signed.sig, 48).context("ecdsa sig der")?;
+                let raw = der_to_raw_ecdsa(&signed.sig, 48).context("ecdsa sig der")?;
                 let sig = p384::ecdsa::Signature::from_slice(&raw).context("ecdsa sig")?;
                 Ok(vk.verify_prehash(&digest, &sig).is_ok())
             }
@@ -426,13 +443,11 @@ pub fn verify_all(
         })
         .collect::<Result<_>>()?;
 
-    let mut chain_ok = Vec::new();
-    for i in 0..certs.len() - 1 {
-        match verify_with(&certs[i + 1], &certs[i]) {
-            Ok(v) => chain_ok.push(v),
-            Err(_) => chain_ok.push(false),
-        }
-    }
+    // An unverifiable link (unsupported algorithm, bad key) is a failed one.
+    let chain_ok: Vec<bool> = certs
+        .windows(2)
+        .map(|w| verify_with(&w[1], &w[0]).unwrap_or(false))
+        .collect();
     let chain_all_ok = chain_ok.iter().all(|&b| b);
     // Trust policy (review #4): every issuer — intermediate and root — must
     // assert CA:true. A random leaf cert chained to a CA (e.g. some third-
@@ -464,11 +479,10 @@ pub fn verify_all(
         Some(dl) if leaf.spki_alg == OID_EC_PUBLIC => {
             match (
                 p256::ecdsa::VerifyingKey::from_sec1_bytes(&leaf.point),
-                der_to_p256_raw(&sig_field[..dl], 32).ok(),
+                der_to_raw_ecdsa(&sig_field[..dl], 32).ok(),
             ) {
                 (Ok(vk), Some(raw)) => p256::ecdsa::Signature::from_slice(&raw)
-                    .map(|sig| vk.verify_prehash(&digest, &sig).is_ok())
-                    .unwrap_or(false),
+                    .is_ok_and(|sig| vk.verify_prehash(&digest, &sig).is_ok()),
                 _ => false,
             }
         }
@@ -489,7 +503,7 @@ pub fn verify_all(
 
 /// Length of the DER SEQUENCE at the head of the 128-byte signature field.
 fn der_sig_len(field: &[u8]) -> Result<usize> {
-    let (_, cs, cl) = Der::new_at(field, 0).tlv()?;
+    let (_, cs, cl) = Der::new(field).tlv()?;
     ensure!(cs + cl <= field.len(), "signature DER past field");
     Ok(cs + cl)
 }
@@ -510,6 +524,22 @@ mod tests {
         assert_eq!(base64_decode(b"KA==").unwrap(), vec![0x28]);
         assert_eq!(base64_decode(b"TWFu").unwrap(), b"Man");
         assert!(base64_decode(b"Zm9!").is_err());
+    }
+
+    /// Certificate bytes come from the archive: malformed DER must be an
+    /// error (exit 4/5), never a panic.
+    #[test]
+    fn malformed_der_is_an_error_not_a_panic() {
+        // A BIT STRING needs at least its unused-bits octet.
+        assert!(bit_string(b"\x03\x00", (0x03, 2, 0), "sig").is_err());
+        assert!(bit_string(b"\x04\x01\x00", (0x04, 2, 1), "sig").is_err());
+        assert_eq!(
+            bit_string(b"\x03\x02\x00\xab", (0x03, 2, 2), "sig").unwrap(),
+            b"\xab"
+        );
+        assert!(child(&[], 0, "spki").is_err());
+        assert!(parse_cert(b"\x30\x00").is_err());
+        assert!(der_sig_len(b"\x30\x05\x00").is_err());
     }
 
     #[test]
