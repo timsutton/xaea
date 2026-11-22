@@ -25,38 +25,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-* **Faster final symlink pass.** Links are still created only after every
-  file has been written, but the creations now run over `--writers` threads
-  instead of one, once the whole link list has been checked for the tar
-  link-attack pattern. On Xcode 27.3 b2 that pass goes from 0.58 s to 0.20 s
-  (~0.4 s, about 5% of a full extract). The same check is now genuinely
-  case-insensitive, as it always intended to be: a nested pair spelled with
-  capitals (`Payload/up` plus `Payload/up/under`) is now refused, where it
-  used to be created through the first link and land outside the output
-  directory the archive named.
+* Performance improvements yielding roughly 10% faster extraction:
+  * Faster final symlink pass ([PR 55](https://github.com/timsutton/xaea/pull/55)
+  * Reduce syscalls and liblzma improvements available on x86_64 systems ([PR 38](https://github.com/timsutton/xaea/pull/38))
 
-* Faster extraction: a full Xcode extract is roughly 5–13% faster than
-  0.1.3, from leaner segment decoding and fewer filesystem calls.
-* **CLI:** `extract` now takes the output directory as an optional
+* `extract` now takes the output directory as an optional
   positional argument (`xaea extract FILE [OUT_DIR]`) instead of the
   required `-o/--out` flag. It defaults to the current directory, which may
-  be non-empty.
-* `extract` aborts up front, before writing anything, if one of the
-  archive's top-level entries (e.g. `Xcode.app`) already exists in the
-  output directory. This replaces the old "output dir must be empty" rule.
+  be non-empty, but it will abort if there exists already a matching payload
+  path in the destination.
 
 ### Removed
 
 * The `-o/--out` option of `extract` (see above).
 * The `--quarantine` extract option (macOS `com.apple.quarantine` tagging).
-
-### Fixed
-
-* The `--decoder` help text claimed `libcompression` was "roughly 5%
-  faster". That predates APFS compression becoming the macOS default and
-  does not describe a full extract: re-measured, the two decoders are
-  indistinguishable there. The ~5% is real, but only at the decode-bound
-  `--dry-run` floor, where nothing is writing.
 
 ## 0.1.3 - 2026-11-19
 
