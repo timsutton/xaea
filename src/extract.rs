@@ -72,7 +72,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread;
-use writer::{Load, Work, writer_loop};
+use writer::{Load, Work, Writer};
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -299,7 +299,8 @@ fn extract_body(
         .map(|(i, rx)| {
             let root = opts.out.clone();
             let load = load.clone().map(|l| (l, i));
-            thread::spawn(move || writer_loop(rx, root, file_default, compress, load, nw))
+            let writer = Writer::new(root, file_default, compress, nw);
+            thread::spawn(move || writer.run(&rx, load))
         })
         .collect();
 
@@ -378,12 +379,16 @@ fn extract_body(
     let st = sink.into_stats(); // closes writer channels; writers flush and exit
 
     let mut first_err: Option<anyhow::Error> = None;
+    let mut refused = 0;
     for h in writers {
         let r = h
             .join()
             .map_err(|_| anyhow::anyhow!("writer thread panicked"))?;
-        if let Err(e) = r {
-            first_err.get_or_insert(e);
+        match r {
+            Ok(n) => refused += n,
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
         }
     }
     for h in decoders {
@@ -399,7 +404,6 @@ fn extract_body(
     }
     status::maybe_print(&prog, nseg);
     status::end_line();
-    let refused = decmpfs::REFUSED.load(Relaxed);
     if compress && refused > 0 {
         eprintln!(
             "warning: the volume refused compression for {refused} files; they were written uncompressed"
