@@ -110,6 +110,23 @@ Options on `extract`:
 | `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |
 | `--json` | machine-readable summary |
 
+## Shell completions
+
+`xaea completions <shell>` prints a completion script to stdout — `bash`,
+`zsh`, `fish`, `elvish`, or `powershell` — generated from the binary's own
+argument parser, so it always matches the installed version:
+
+```sh
+# zsh — into any dir on $fpath (add `fpath+=~/.zfunc` before compinit)
+mkdir -p ~/.zfunc && xaea completions zsh > ~/.zfunc/_xaea
+
+# bash — Homebrew bash: $(brew --prefix)/etc/bash_completion.d; Linux: /etc/bash_completion.d
+xaea completions bash > /usr/local/etc/bash_completion.d/xaea
+
+# fish — no reload config needed
+xaea completions fish > ~/.config/fish/completions/xaea.fish
+```
+
 ## Verification & fidelity
 
 `extract` **verifies by default** and refuses an archive unless every check

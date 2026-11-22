@@ -12,6 +12,11 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# `xaea completions <shell>`: AOT generators only (default features), so the
+# dependency is clap itself plus the script templates. Normal dep, not a
+# feature: releases ship a bare binary, and completions must be generatable
+# from the shipped binary without a feature-flagged rebuild from source.
+clap_complete = "4"
 memmap2 = "0.9"
 sha2 = "0.11"
 hmac = "0.13"
