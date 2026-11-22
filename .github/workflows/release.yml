@@ -41,9 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Full history — GoReleaser generates the release notes from the
-          # commit log between tags.
-          fetch-depth: 0
+          fetch-depth: 0 # GoReleaser needs the tags
       # A real release must be cut from a vX.Y.Z tag that matches the crate
       # version in both Cargo.toml and Cargo.lock; otherwise the binaries would
       # report a different version than the release they're attached to.
@@ -83,6 +81,10 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+      # The release body is this version's CHANGELOG.md section, not the commit
+      # log. Fails (and so blocks the release) if there's no entry for it.
+      - name: Extract release notes
+        run: scripts/release-notes.sh "$(awk -F'"' '/^version *=/ {print $2; exit}' Cargo.toml)" > "$RUNNER_TEMP/release-notes.md"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -113,7 +115,7 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.20.2
-          args: ${{ inputs.snapshot && 'release --snapshot --clean' || 'release --clean' }}
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md${{ inputs.snapshot && ' --snapshot' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
