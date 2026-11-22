@@ -16,6 +16,12 @@ is in [PERFORMANCE-NOTES.md](doc/PERFORMANCE-NOTES.md).
 
 ## Install
 
+On macOS, install with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask timsutton/formulae/xaea
+```
+
 Prebuilt macOS and Linux binaries are attached to every [GitHub
 release](https://github.com/timsutton/xaea/releases/latest) — a universal
 (x86_64 + arm64) binary for macOS, and x86_64 and aarch64 for Linux, each as a `.tar.gz` with the LICENSE, README and CHANGELOG
