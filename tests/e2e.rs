@@ -147,7 +147,7 @@ fn synthetic_verifies_green() {
 
 #[test]
 fn synthetic_extract_fidelity() {
-    if let Some((dir, _, stats)) = extract_fidelity("fidelity", &["--no-compress"]) {
+    if let Some((dir, _, stats)) = extract_fidelity("fidelity", &["--no-compress"], &[]) {
         assert_eq!(stats["compressed"], false);
         fs::remove_dir_all(&dir).ok();
     }
@@ -160,7 +160,7 @@ fn synthetic_extract_fidelity() {
 #[test]
 fn synthetic_extract_fidelity_compressed() {
     use std::os::macos::fs::MetadataExt;
-    let Some((dir, out, stats)) = extract_fidelity("compress", &[]) else {
+    let Some((dir, out, stats)) = extract_fidelity("compress", &[], &[]) else {
         return;
     };
     if stats["compressed"] != true {
@@ -191,19 +191,62 @@ fn libc_uf_compressed() -> u32 {
     0x20 // UF_COMPRESSED, <sys/stat.h>
 }
 
-/// Extract the synthetic archive with `extra` flags and check the exact
-/// tree against its manifest. Returns (archive dir, output dir, stats).
-fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Value)> {
+/// Directory-affine routing (`XAEA_ROUTE=dir[:N]`, issue #46) only decides
+/// which writer thread issues each syscall; the tree must come out exactly
+/// as the manifest says. `dir` exercises the affinity path (small tree,
+/// default threshold), `dir:1` forces the spill path (a writer with any
+/// queued work is over the 1-byte threshold).
+#[test]
+fn dir_affinity_routing_fidelity() {
+    for (tag, gate) in [("dirroute", "dir"), ("dirroutespill", "dir:1")] {
+        let env = format!("XAEA_ROUTE={gate}");
+        if let Some((dir, _, _)) = extract_fidelity(tag, &["--no-compress"], &[&env]) {
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+}
+
+/// A mistyped routing gate must fail loudly, not silently extract with the
+/// default routing (a benchmark measuring the wrong thing is worse than one
+/// that refuses to run).
+#[test]
+fn dir_affinity_routing_gate_rejects_garbage() {
+    let Some((dir, _)) = synthetic("dirroutebad") else {
+        return;
+    };
+    let run = xaea()
+        .env("XAEA_ROUTE", "roundrobin")
+        .arg("extract")
+        .arg(dir.join("archive.aea"))
+        .arg(dir.join("out"))
+        .output()
+        .expect("run extract");
+    assert!(!run.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("XAEA_ROUTE"),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Extract the synthetic archive with `extra` flags (and `envs` of the form
+/// `K=V`) and check the exact tree against its manifest. Returns (archive
+/// dir, output dir, stats).
+fn extract_fidelity(tag: &str, extra: &[&str], envs: &[&str]) -> Option<(PathBuf, PathBuf, Value)> {
     let (dir, man) = synthetic(tag)?;
     let out = dir.join("out");
-    let run = xaea()
-        .arg("extract")
+    let mut cmd = xaea();
+    cmd.arg("extract")
         .arg(dir.join("archive.aea"))
         .arg(&out)
         .arg("--json")
-        .args(extra)
-        .output()
-        .expect("run extract");
+        .args(extra);
+    for e in envs {
+        let (k, v) = e.split_once('=').expect("env spec is K=V");
+        cmd.env(k, v);
+    }
+    let run = cmd.output().expect("run extract");
     assert!(
         run.status.success(),
         "extract: {}",

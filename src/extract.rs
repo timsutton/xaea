@@ -9,8 +9,10 @@
 //! pure CPU + dispatch (instrumentation showed parser-issued syscalls were
 //! the wall-clock bottleneck, not write throughput). Ordering rules:
 //!
-//! * files pick a writer by round-robin sequence — their Open and all blob
-//!   slices share that one FIFO channel;
+//! * files pick a writer by least queued work when load counters are active
+//!   (always when compressing; `XAEA_BALANCE=1` forces it otherwise), else by
+//!   round-robin sequence — their Open and all blob slices share that one
+//!   FIFO channel;
 //! * directories hash-route by path, and file parents are additionally
 //!   created on demand (only when the file's open fails with ENOENT), so
 //!   no cross-channel ordering assumption is ever made;
@@ -289,8 +291,8 @@ pub fn end_status_line() {
 /// chmod, symlink, pwrite) happen on writer threads so the
 /// parser stays pure CPU + dispatch; per-writer channels are FIFO, so any
 /// ordering a path needs is guaranteed by routing that path's messages to
-/// one channel (files/links by round-robin sequence, directories by
-/// content-hash of their path).
+/// one channel (files by least-loaded or round-robin sequence, directories
+/// by content-hash of their path).
 enum Work {
     Mkdir {
         path: Box<Path>,
@@ -581,6 +583,105 @@ fn least_loaded(load: &[AtomicU64], start: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Directory-affine routing (issue #46), enabled by `XAEA_ROUTE=dir[:N]`:
+/// a directory's files prefer the writer that took its first record (its
+/// mkdir, or its first file when the archive has none), and spill to the
+/// least-loaded writer once that writer's outstanding work exceeds `N` —
+/// the same byte unit as [`Load`]. Pure directory routing was measured and
+/// rejected in the PR #38 round (a big directory pins one writer and the
+/// parser blocks behind its full queue); the spill threshold is what makes
+/// affinity worth retrying.
+#[derive(Clone, Copy)]
+struct DirRoute {
+    spill: u64,
+}
+
+/// Default spill threshold: roughly one writer queue of small-file opens
+/// (32 × [`OPEN_COST`]).
+const DIR_SPILL_DEFAULT: u64 = 1 << 20;
+
+impl DirRoute {
+    fn from_env() -> Result<Option<Self>> {
+        Self::parse(std::env::var_os("XAEA_ROUTE"))
+    }
+
+    fn parse(v: Option<std::ffi::OsString>) -> Result<Option<Self>> {
+        let Some(v) = v else { return Ok(None) };
+        let v = v.to_string_lossy().into_owned();
+        let (kind, n) = match v.split_once(':') {
+            Some((k, n)) => (k, Some(n)),
+            None => (v.as_str(), None),
+        };
+        anyhow::ensure!(
+            kind == "dir",
+            "XAEA_ROUTE={v:?}: only \"dir\" and \"dir:N\" are supported"
+        );
+        let spill = match n {
+            Some(s) => {
+                parse_size(s).with_context(|| format!("XAEA_ROUTE={v:?}: bad spill threshold"))?
+            }
+            None => DIR_SPILL_DEFAULT,
+        };
+        Ok(Some(DirRoute { spill }))
+    }
+}
+
+/// Byte count, optionally suffixed with k/m/g (case-insensitive).
+fn parse_size(s: &str) -> Result<u64> {
+    let s = s.trim();
+    let (digits, mul) = match s.as_bytes().last() {
+        Some(b'k' | b'K') => (&s[..s.len() - 1], 1u64 << 10),
+        Some(b'm' | b'M') => (&s[..s.len() - 1], 1u64 << 20),
+        Some(b'g' | b'G') => (&s[..s.len() - 1], 1u64 << 30),
+        _ => (s, 1),
+    };
+    let n: u64 = digits
+        .trim()
+        .parse()
+        .with_context(|| format!("{s:?} is not a byte count"))?;
+    n.checked_mul(mul).context("byte count overflows")
+}
+
+/// Parent directory of a raw record path ("" for the output root). A routing
+/// hint only: two spellings that sanitize to the same directory may key
+/// apart, and nothing correctness-relevant depends on the split.
+fn dir_of(path: &[u8]) -> &[u8] {
+    match path.iter().rposition(|&b| b == b'/') {
+        Some(i) => &path[..i],
+        None => b"",
+    }
+}
+
+/// Writer for a new file. With [`DirRoute`] active the directory's bound
+/// writer wins while its outstanding load is at or under the spill
+/// threshold; past it the file goes to the least-loaded writer and the
+/// binding survives (sticky — the directory returns to its writer once that
+/// queue drains). An unbound directory binds to the writer its first file
+/// lands on. Without a route this is exactly the pre-affinity behaviour.
+fn pick_file(
+    route: Option<DirRoute>,
+    load: Option<&Load>,
+    dirw: &mut HashMap<Vec<u8>, usize>,
+    dir: &[u8],
+    seq: u64,
+    nw: usize,
+) -> usize {
+    let start = seq as usize % nw;
+    let Some(l) = load else { return start };
+    if let Some(cfg) = route {
+        match dirw.get(dir) {
+            Some(&p) if l[p].load(Relaxed) <= cfg.spill => return p,
+            Some(_) => {}
+            None => {
+                let w = least_loaded(l, start);
+                dirw.insert(dir.to_vec(), w);
+                return w;
+            }
+        }
+    }
+    least_loaded(l, start)
+}
+
 fn writer_loop(
     rx: Receiver<Work>,
     root: PathBuf,
@@ -758,6 +859,10 @@ struct DispatchSink {
     /// Per-writer queued work; when set, files go to the least-loaded
     /// writer instead of round-robin.
     load: Option<Load>,
+    /// Directory affinity (`XAEA_ROUTE=dir`); implies `load`.
+    route: Option<DirRoute>,
+    /// Directory (raw record path minus the file name) → preferred writer.
+    dirw: HashMap<Vec<u8>, usize>,
     prealloc: bool,
     /// Held back for the final pass (see module docs).
     links: Vec<(Box<Path>, Box<str>)>,
@@ -836,8 +941,24 @@ impl Sink for DispatchSink {
         let nw = self.txs.len();
         match rec.typ {
             b'D' => {
+                // Hash-routed as always; under a directory route the mkdir
+                // also *binds* its directory, so the directory's files
+                // prefer this writer and (being behind the mkdir in the
+                // same FIFO queue) normally open without the ENOENT
+                // `mkdir -p` fallback.
+                let w = match self.route {
+                    Some(_) => match self.dirw.get(&rec.path[..]) {
+                        Some(&w) => w,
+                        None => {
+                            let w = route_hash(&rec.path, nw);
+                            self.dirw.insert(rec.path.clone(), w);
+                            w
+                        }
+                    },
+                    None => route_hash(&rec.path, nw),
+                };
                 if !self.dry {
-                    self.send(route_hash(&rec.path, nw), Work::Mkdir { path: rel.clone() })?;
+                    self.send(w, Work::Mkdir { path: rel.clone() })?;
                     self.dir_modes.push((rel, mode));
                 }
                 self.st.dirs += 1;
@@ -857,10 +978,14 @@ impl Sink for DispatchSink {
             b'F' => {
                 self.obj_seq += 1;
                 let seq = self.obj_seq;
-                let w = match &self.load {
-                    Some(l) => least_loaded(l, seq as usize % nw),
-                    None => seq as usize % nw,
-                };
+                let w = pick_file(
+                    self.route,
+                    self.load.as_ref(),
+                    &mut self.dirw,
+                    dir_of(&rec.path),
+                    seq,
+                    nw,
+                );
                 if !self.dry {
                     self.send(
                         w,
@@ -1154,8 +1279,10 @@ fn extract_body(
     let (wtx, wrx): (Vec<SyncSender<Work>>, Vec<Receiver<Work>>) = (0..nw)
         .map(|_| sync_channel::<Work>(prof::depth("XAEA_WQ", 32)))
         .unzip();
-    let load: Option<Load> = (compress || std::env::var_os("XAEA_BALANCE").is_some())
-        .then(|| (0..nw).map(|_| AtomicU64::new(0)).collect());
+    let route = DirRoute::from_env()?;
+    let load: Option<Load> =
+        (compress || route.is_some() || std::env::var_os("XAEA_BALANCE").is_some())
+            .then(|| (0..nw).map(|_| AtomicU64::new(0)).collect());
     let writers: Vec<_> = wrx
         .into_iter()
         .enumerate()
@@ -1214,6 +1341,8 @@ fn extract_body(
         prog: prog.clone(),
         obj_seq: 0,
         load,
+        route,
+        dirw: Default::default(),
         prealloc: opts.prealloc,
         links: Vec::new(),
         dir_modes: Vec::new(),
@@ -1602,6 +1731,78 @@ mod tests {
             );
             std::fs::remove_dir_all(&root).unwrap();
         }
+    }
+
+    #[test]
+    fn dir_route_parses() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        assert!(DirRoute::parse(None).unwrap().is_none());
+        assert_eq!(
+            DirRoute::parse(os("dir")).unwrap().unwrap().spill,
+            DIR_SPILL_DEFAULT
+        );
+        assert_eq!(
+            DirRoute::parse(os("dir:4096")).unwrap().unwrap().spill,
+            4096
+        );
+        assert_eq!(
+            DirRoute::parse(os("dir:2m")).unwrap().unwrap().spill,
+            2 << 20
+        );
+        assert_eq!(
+            DirRoute::parse(os("dir: 512K ")).unwrap().unwrap().spill,
+            512 << 10
+        );
+        assert_eq!(DirRoute::parse(os("dir:0")).unwrap().unwrap().spill, 0);
+        // Anything else is a hard error: a mistyped gate must not silently
+        // measure the wrong thing.
+        assert!(DirRoute::parse(os("rr")).is_err());
+        assert!(DirRoute::parse(os("dir:x")).is_err());
+        assert!(DirRoute::parse(os("dir:")).is_err());
+        assert!(DirRoute::parse(os("dir:1g")).unwrap().unwrap().spill == 1 << 30);
+        assert!(DirRoute::parse(os("dir:18446744073709551616")).is_err());
+    }
+
+    #[test]
+    fn dir_of_cuts_at_last_slash() {
+        assert_eq!(dir_of(b"a/b/c.bin"), b"a/b");
+        assert_eq!(dir_of(b"top.bin"), b"");
+        assert_eq!(dir_of(b"a/"), b"a");
+    }
+
+    #[test]
+    fn pick_file_affinity_and_spill() {
+        let nw = 4;
+        let load: Load = (0..nw).map(|_| AtomicU64::new(0)).collect();
+        let route = Some(DirRoute { spill: 100 });
+        let mut dirw = HashMap::new();
+        // No route: round-robin without load counters, least-loaded with
+        // them — the pre-affinity behaviour, unchanged.
+        assert_eq!(pick_file(None, None, &mut dirw, b"d", 7, nw), 3);
+        load[1].store(50, Relaxed);
+        assert_eq!(pick_file(None, Some(&load), &mut dirw, b"d", 0, nw), 0);
+        assert!(dirw.is_empty(), "no route must not bind");
+        // First file in a directory binds it to the writer it lands on
+        // (least-loaded from the rotation start: writer 0 here).
+        let w = pick_file(route, Some(&load), &mut dirw, b"d", 0, nw);
+        assert_eq!((w, dirw.get(&b"d"[..])), (0, Some(&0)));
+        // …and later files prefer it even when another writer is emptier,
+        // as long as it stays at or under the threshold.
+        load[0].store(100, Relaxed);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 1, nw), 0);
+        // Past the threshold the file spills to the least-loaded writer and
+        // the binding survives (sticky).
+        load[0].store(101, Relaxed);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 2, nw), 2);
+        assert_eq!(dirw.get(&b"d"[..]), Some(&0));
+        // Once the preferred writer drains back under the threshold,
+        // affinity resumes.
+        load[0].store(10, Relaxed);
+        assert_eq!(pick_file(route, Some(&load), &mut dirw, b"d", 3, nw), 0);
+        // A different directory is independent and binds on its own first
+        // file (least-loaded from start 0: writer 2, the only zero).
+        let w2 = pick_file(route, Some(&load), &mut dirw, b"e", 4, nw);
+        assert_eq!((w2, dirw.get(&b"e"[..])), (2, Some(&2)));
     }
 
     #[test]
