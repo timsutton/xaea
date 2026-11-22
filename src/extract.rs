@@ -117,7 +117,7 @@ pub fn physical_ram() -> Option<u64> {
             libc::sysctlbyname(
                 c"hw.memsize".as_ptr(),
                 (&raw mut v).cast(),
-                &mut len,
+                &raw mut len,
                 std::ptr::null_mut(),
                 0,
             )
@@ -256,8 +256,7 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
             // Few threads on purpose: this path should hide underneath the
             // decode pipeline, not compete with it for cores.
             let n = std::thread::available_parallelism()
-                .map(|n| n.get().min(4))
-                .unwrap_or(2)
+                .map_or(2, |n| n.get().min(4))
                 .max(1);
             scope.spawn(move || env.verify_segment_macs_with(&k, n))
         });
@@ -299,8 +298,8 @@ fn extract_body(
         .map(|(i, rx)| {
             let root = opts.out.clone();
             let load = load.clone().map(|l| (l, i));
-            let writer = Writer::new(root, file_default, compress, nw);
-            thread::spawn(move || writer.run(&rx, load))
+            let writer = Writer::new(root, file_default, compress, nw, load);
+            thread::spawn(move || writer.run(&rx))
         })
         .collect();
 
@@ -345,10 +344,10 @@ fn extract_body(
     while expect < nseg {
         let (i, buf) = prof::time(C::PRecv, || drx.recv()).context("decoder thread died")??;
         if i == expect {
-            prof::time(C::PFeed, || stream.feed(buf))?;
+            prof::time(C::PFeed, || stream.feed(&buf))?;
             expect += 1;
             while let Some(b) = pending.remove(&expect) {
-                prof::time(C::PFeed, || stream.feed(b))?;
+                prof::time(C::PFeed, || stream.feed(&b))?;
                 expect += 1;
             }
             prog.seg_done.store(expect, Relaxed);

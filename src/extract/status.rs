@@ -46,6 +46,8 @@ const STATUS_SIG: libc::c_int = libc::SIGINFO;
 const STATUS_SIG: libc::c_int = libc::SIGUSR1;
 
 pub(super) fn install_signal() {
+    // SAFETY: `on_status` is an `extern "C" fn(c_int)` that only stores to
+    // an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(STATUS_SIG, on_status as *const () as libc::sighandler_t);
     }

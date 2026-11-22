@@ -156,6 +156,9 @@ pub(super) struct Writer {
     enc: Option<decmpfs::Encoder>,
     /// Files the volume refused to store compressed (written plain).
     refused: u64,
+    /// The shared load table and this writer's slot in it, when the
+    /// parser balances by load.
+    load: Option<(Load, usize)>,
 }
 
 impl Writer {
@@ -164,6 +167,7 @@ impl Writer {
         file_default: u32,
         compress: bool,
         link_workers: usize,
+        load: Option<(Load, usize)>,
     ) -> Self {
         Writer {
             root,
@@ -172,13 +176,14 @@ impl Writer {
             cur: None,
             enc: compress.then(decmpfs::Encoder::new),
             refused: 0,
+            load,
         }
     }
 
-    /// Execute work until the channel closes. `load` is the shared load
-    /// table and this writer's slot in it, when the parser balances by
-    /// load. Returns how many files the volume refused to store compressed.
-    pub(super) fn run(mut self, rx: &Receiver<Work>, load: Option<(Load, usize)>) -> Result<u64> {
+    /// Execute work until the channel closes. Returns how many files the
+    /// volume refused to store compressed.
+    pub(super) fn run(mut self, rx: &Receiver<Work>) -> Result<u64> {
+        let load = self.load.take();
         while let Ok(w) = prof::time(C::WRecv, || rx.recv()) {
             // Credited back once the message is handled (on error the whole
             // extraction is failing anyway).

@@ -16,6 +16,7 @@ use common::{build_archive, check, manifest, xaea};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -195,7 +196,10 @@ fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Valu
                 h.update(&got);
                 // sha2 0.11 output arrays no longer Display as hex
                 let digest: [u8; 32] = h.finalize().into();
-                let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                let hex = digest.iter().fold(String::new(), |mut s, b| {
+                    let _ = write!(s, "{b:02x}");
+                    s
+                });
                 assert_eq!(hex, e["sha256"].as_str().unwrap());
                 assert_eq!(
                     mode_of(&p),

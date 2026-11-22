@@ -44,3 +44,28 @@ liblzma = { version = "0.4", features = ["static"] }
 
 [profile.release]
 lto = true
+
+# CI runs clippy with -D warnings, so these are enforced. A deliberately
+# small subset of clippy::pedantic: the lints that catch real problems in
+# this codebase, not the cast-precision noise of byte-offset arithmetic.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+borrow_as_ptr = "warn"
+cast_lossless = "warn"
+format_collect = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+match_same_arms = "warn"
+needless_pass_by_value = "warn"
+ptr_as_ptr = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+single_match_else = "warn"
+trivially_copy_pass_by_ref = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+used_underscore_binding = "warn"

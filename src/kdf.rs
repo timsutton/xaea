@@ -62,6 +62,7 @@ pub fn segment_key(ck: &Key, segment_index: u32) -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -70,7 +71,10 @@ mod tests {
             .collect()
     }
     fn tohex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
     }
 
     // Deterministic reference vectors from scripts/make_test_aea.py (seed 1).

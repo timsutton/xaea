@@ -91,7 +91,7 @@ impl<P: Sink> Stream<P> {
         }
     }
 
-    pub fn feed(&mut self, chunk: Arc<[u8]>) -> Result<()> {
+    pub fn feed(&mut self, chunk: &Arc<[u8]>) -> Result<()> {
         let mut p = 0usize;
         while p < chunk.len() {
             match self.state {
@@ -149,8 +149,7 @@ impl<P: Sink> Stream<P> {
 
     pub fn finish(&self) -> Result<()> {
         match self.state {
-            State::Header if self.buf.is_empty() => Ok(()),
-            State::Blob(0) if self.buf.is_empty() => Ok(()),
+            State::Header | State::Blob(0) if self.buf.is_empty() => Ok(()),
             _ => bail!("AA01 stream ended mid-record/mid-blob"),
         }
     }
@@ -322,7 +321,7 @@ mod tests {
                 blob: vec![],
             });
             for c in s.chunks(chunk) {
-                st.feed(Arc::from(c.to_vec().into_boxed_slice())).unwrap();
+                st.feed(&Arc::from(c.to_vec().into_boxed_slice())).unwrap();
             }
             st.finish().unwrap();
             let Ev { recs, blob: got } = st.into_sink();
@@ -348,7 +347,7 @@ mod tests {
             blob: vec![],
         });
         let e = st
-            .feed(Arc::from(b"XXXX\x08\x00".to_vec().into_boxed_slice()))
+            .feed(&Arc::from(b"XXXX\x08\x00".to_vec().into_boxed_slice()))
             .unwrap_err();
         assert!(e.to_string().contains("desync"), "{e}");
 
@@ -357,7 +356,7 @@ mod tests {
             recs: vec![],
             blob: vec![],
         });
-        st.feed(Arc::from(dir_rec("a")[..4].to_vec().into_boxed_slice()))
+        st.feed(&Arc::from(dir_rec("a")[..4].to_vec().into_boxed_slice()))
             .unwrap();
         assert!(st.finish().is_err());
 
@@ -366,7 +365,7 @@ mod tests {
             recs: vec![],
             blob: vec![],
         });
-        st.feed(Arc::from(file_rec("f", 300))).unwrap();
+        st.feed(&Arc::from(file_rec("f", 300))).unwrap();
         assert!(st.finish().is_err());
     }
 
@@ -379,7 +378,7 @@ mod tests {
             recs: vec![],
             blob: vec![],
         });
-        let e = st.feed(Arc::from(rec(&body))).unwrap_err();
+        let e = st.feed(&Arc::from(rec(&body))).unwrap_err();
         assert!(e.to_string().contains("unknown AA01 tag"), "{e}");
     }
 }

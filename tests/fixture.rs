@@ -18,9 +18,10 @@ use std::process::Command;
 #[test]
 #[ignore = "requires the multi-GB Xcode fixture; run with --ignored"]
 fn real_fixture_verifies_green() {
-    let path = std::env::var("AEA_FIXTURE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("fixtures/Xcode_27.3_beta_2.aea"));
+    let path = std::env::var("AEA_FIXTURE").map_or_else(
+        |_| PathBuf::from("fixtures/Xcode_27.3_beta_2.aea"),
+        PathBuf::from,
+    );
     if !path.exists() {
         eprintln!("SKIP: fixture not found at {}", path.display());
         return;

@@ -67,9 +67,9 @@ fn base64_decode(b: &[u8]) -> Result<Vec<u8>> {
     // minimal base64 decoder (standard alphabet)
     fn val(c: u8) -> Result<u32> {
         Ok(match c {
-            b'A'..=b'Z' => (c - b'A') as u32,
-            b'a'..=b'z' => (c - b'a') as u32 + 26,
-            b'0'..=b'9' => (c - b'0') as u32 + 52,
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
             b'+' => 62,
             b'/' => 63,
             _ => bail!("bad base64 byte"),
@@ -455,8 +455,7 @@ pub fn verify_all(
     let ca_ok = certs.len() < 2 || certs[1..].iter().all(|c| c.basic_ca == Some(true));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     let valid_now = certs
         .iter()
         .all(|c| c.not_before_ts <= now && now <= c.not_after_ts);

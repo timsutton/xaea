@@ -101,14 +101,14 @@ fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf
         // `orig` bytes there and reports how many in `out_pos`.
         let ret = unsafe {
             lz::lzma_stream_buffer_decode(
-                &mut memlimit,
+                &raw mut memlimit,
                 flags,
                 std::ptr::null(),
                 data.as_ptr(),
-                &mut in_pos,
+                &raw mut in_pos,
                 data.len(),
                 dst,
-                &mut out_pos,
+                &raw mut out_pos,
                 orig,
             )
         };
@@ -161,6 +161,7 @@ mod libcompression {
         // libcompression allocate one per call.
         static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![
             0u8;
+            // SAFETY: no preconditions.
             unsafe { compression_decode_scratch_buffer_size(COMPRESSION_LZMA) }
         ]);
     }
@@ -224,6 +225,7 @@ mod tests {
 
         // Flip a bit of the stored CRC64: caught when the xz check is the
         // only one, skipped when the caller's SHA-256 will cover the bytes.
+        // SAFETY: `data` is valid for `data.len()` bytes.
         let crc = unsafe { liblzma_sys::lzma_crc64(data.as_ptr(), data.len(), 0) }.to_le_bytes();
         let at = enc
             .windows(8)

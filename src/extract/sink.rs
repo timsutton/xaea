@@ -54,7 +54,7 @@ pub(super) struct DispatchSink {
 fn route_hash(path: &[u8], nw: usize) -> usize {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in path {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x100_0000_01b3);
     }
     h as usize % nw
