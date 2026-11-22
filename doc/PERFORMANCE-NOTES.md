@@ -107,6 +107,20 @@ concentrated the work).
 | decoder channel `--readahead` | min(160, RAM/8 ÷ segment size), floor `nd + 4` | was `nd + 4` (19), which stopped decoders running ahead during the writer-bound first half of the archive; 160 gives −9% (M3 Max) / −7% (M4 Max) wall for +1.5–2 GiB peak RSS, so it is capped to 1/8 of physical RAM (64 on 8 GB, 128 on 16 GB, 160 from 32 GB). Not yet measured under real memory pressure. See "Profiling build" below |
 | writer queue | 32 per writer | queue depth 12 cost **~1.5 s** of parser throughput via backpressure; 32 restored in the hardening batch. Worst case pinned memory: writers × 32 × segment size ≈ **3 GiB** — deliberate trade, documented in `extract.rs` |
 
+The `--jobs` optimum is machine- *and mode*-dependent. The cores−1
+rationale above is M3 Max and no-compress-shaped; on the M4 Pro mini
+(10P+4E) it is wrong for the compression path. Interleaved,
+rotating-order, paired: with compression on, j10 beats cores−1 by
+**0.46 ± 0.04 s** (n=15, 0/15 rounds against) and j14 by the same
+margin, while cores−1 and j14 are indistinguishable; with
+`--no-compress` the sign flips — cores−1 beats j10 by **0.35 ± 0.01 s**
+(n=7, 7/7). Fewer decoders help when writers burn encode CPU and hurt
+when they are I/O-blocked — that is the row's own rationale, restated
+on a smaller chip. No default change: one number has to serve both
+modes and the spread is ~4%. Beware sequential A/B here — `bench.sh`
+runs its variants sequentially, and an earlier sequential sweep's
+"j14 recovers" (−0.26 s vs cores−1) did not survive interleaving.
+
 Raw grid/A-B logs lived in `/tmp/bench_{grid,ab,g2,jobs}.log`
 (transient; regenerate with `XAEA_STATS=1` runs before touching these
 constants).
@@ -132,6 +146,18 @@ observable difference; non-default modes always still get the call.
   it's a backpressure-vs-memory trade, not "more is better".
 - **mmap for the archive**: ruled out for `Sync` reasons above; nobody
   has since shown pread being the bottleneck at these rates.
+- **Pinning decode to performance cores** (M4 Pro mini, 10P+4E): the
+  testable premise — E-core stragglers stalling the ordered pipeline —
+  fails at the source. Per-segment decode times reproduce across runs
+  (Spearman ρ = 0.997 over 622 full segments, median per-segment CV
+  1.4%) with no bimodality (max interior gap ×1.02): the 4× ns/B
+  spread is LZMA content, not core placement, and per-thread rankings
+  shuffle between runs. Sizing the pool to the P-core count is a
+  measured decode loss too — dry-run is monotonic to j14, the 4
+  E-cores worth 1.06 s (17%) over j10. QoS pinning itself was never
+  measured: it was gated on the straggler test firing, and the headers
+  don't promise P/E exclusion anyway (QoS classes are throughput/energy
+  requests; `THREAD_AFFINITY_POLICY` is an experimental L2 hint).
 
 ## Alternate LZMA decoder: Apple's libcompression (`--decoder`)
 
