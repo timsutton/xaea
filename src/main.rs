@@ -5,6 +5,7 @@ mod extract;
 mod kdf;
 mod prof;
 mod sigverify;
+mod spool;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -25,6 +26,7 @@ enum Commands {
     /// Parse and (optionally) verify an AEA file
     #[command(visible_alias = "i")]
     Inspect {
+        /// Archive path; `-` reads the archive from standard input
         file: PathBuf,
         /// Machine-readable output
         #[arg(long)]
@@ -44,6 +46,7 @@ enum Commands {
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
     #[command(visible_alias = "x")]
     Extract {
+        /// Archive path; `-` reads the archive from standard input
         file: PathBuf,
         /// Directory to extract into (created if missing; default: the
         /// current directory). Aborts before writing anything if the
@@ -248,8 +251,11 @@ fn inspect(
     decoder: XzDecoder,
 ) -> Result<()> {
     decoder.check_available().map_err(classified(Exit::Usage))?;
-    let fstd = std::fs::File::open(path)
-        .with_context(|| format!("open {}", path.display()))
+    // `-` spools stdin to a private temp file; `src` (and with it the
+    // spool's cleanup guard) must outlive the mmap below.
+    let src = spool::resolve(path).map_err(classified(Exit::Unreadable))?;
+    let fstd = std::fs::File::open(&src.path)
+        .with_context(|| format!("open {}", src.label))
         .map_err(classified(Exit::Unreadable))?;
     let file = unsafe { memmap2::Mmap::map(&fstd) }
         .context("mmap")
@@ -364,7 +370,7 @@ fn inspect(
 
     println!(
         "{}  —  AEA1, profile {} (no encryption, signed)",
-        path.display(),
+        src.label,
         env.profile.id()
     );
     println!(
@@ -424,9 +430,19 @@ fn extract_cmd(
     compress: extract::Compress,
 ) -> Result<()> {
     decoder.check_available().map_err(classified(Exit::Usage))?;
+    if out == std::path::Path::new("-") {
+        bail_exit!(
+            Exit::Usage,
+            "`-` names standard input, which is not an output directory"
+        );
+    }
     let t0 = std::time::Instant::now();
-    let fstd = std::fs::File::open(path)
-        .with_context(|| format!("open {}", path.display()))
+    // `-` spools stdin to a private temp file; `src` (and with it the
+    // spool's cleanup guard) must outlive extract(), which re-opens the
+    // path for its pread segment reads.
+    let src = spool::resolve(path).map_err(classified(Exit::Unreadable))?;
+    let fstd = std::fs::File::open(&src.path)
+        .with_context(|| format!("open {}", src.label))
         .map_err(classified(Exit::Unreadable))?;
     let file = unsafe { memmap2::Mmap::map(&fstd) }
         .context("mmap")
@@ -475,7 +491,7 @@ fn extract_cmd(
         decoder,
         compress,
     };
-    let st = extract::extract(&env, path, &opts).map_err(classified(Exit::Extraction))?;
+    let st = extract::extract(&env, &src.path, &opts).map_err(classified(Exit::Extraction))?;
     let secs = t0.elapsed().as_secs_f64();
     let rate = st.bytes as f64 / secs / (1u64 << 20) as f64;
     if json {
