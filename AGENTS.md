@@ -2,8 +2,7 @@
 
 Instructions for AI agents working on this repo. Both Claude Code and Codex
 review and author changes here, and this file loads into every session — so
-it stays short and holds only what the docs don't frame for you. The deep
-docs are the source of truth; read them before touching what they cover.
+it holds only what the docs don't frame; the docs stay the source of truth.
 
 ## Orientation
 
@@ -18,16 +17,17 @@ when a gate result has to mean what CI will say.
   against a real Apple artifact, incl. four spec errata. Read before
   touching `envelope.rs`, `aa.rs`, `kdf.rs`, `sigverify.rs`, or decmpfs layout.
 - `doc/PERFORMANCE-NOTES.md` — the measured history behind the speed: tuned
-  defaults, instrumentation, rejected optimizations. Read before any change
-  that could move a number.
+  defaults, instrumentation, rejected optimizations. Read before any
+  perf-shaped change.
 - `doc/RELEASING-LOCALLY.md` — GoReleaser as a local snapshot build. Only
   when working on release tooling.
 
 ## Verification gate
 
 A branch is done only when all three pass — the exact CI commands
-(`ci.yml:31,47,65`; clippy and test run on both ubuntu and macos, and
-macOS-only code like `decmpfs.rs` compiles nowhere else):
+(`ci.yml:31,47,65`; clippy and test run on ubuntu and macos — the
+macOS-gated FFI in `decmpfs.rs` and the libcompression decoder compiles
+only on the macos runner):
 
 ```sh
 cargo fmt --all --check
@@ -106,11 +106,16 @@ All in `src/extract.rs`; each is pinned by a test.
 
 ## Rust conventions (as actually used)
 
-- **Errors are `anyhow` end to end.** No typed error enums exist in `src/`;
-  raise with `bail!`/`ensure!`, add `.with_context(|| format!(…))` at each
-  call site, and let `fn main() -> Result<()>` (`src/main.rs:103`) print
-  the chain and exit 1. There is no exit-code classification beyond that;
-  `inspect --verify` signals failure by erroring.
+- **Errors are `anyhow` inside modules; exit codes are assigned only at the
+  `main` boundary.** Raise with `bail!`/`ensure!` + `.with_context(…)`;
+  `src/main.rs` tags errors into the `Exit` enum via `classified()` /
+  `bail_exit!` (110-167), and `main() -> ExitCode` (169) picks the code by
+  downcasting the error chain — never message text. `doc/ERROR-CODES.md` is
+  the stability contract: 0 ok, 1 generic, 2 usage, 3 unreadable input,
+  4 rejected archive, 5 `inspect --verify` failure, 6 extract failure (incl.
+  mid-extract verification), 7 reserved, 8–125 append-only, 126–128 and
+  ≥128 never. Never renumber or repurpose a code; a new class needs a table
+  row, a `tests/exit_codes.rs` assertion, and a CHANGELOG entry.
 - `.unwrap()` appears in tests and in provably-total conversions
   (bounds-checked `try_into`, e.g. `src/envelope.rs:298`); elsewhere return
   `Result`.
@@ -122,37 +127,34 @@ All in `src/extract.rs`; each is pinned by a test.
   (`liblzma-sys`, `Cargo.toml:25`; one-shot decode at `src/envelope.rs:106`)
   and Apple's libcompression (`#[link(name = "compression")]`,
   `src/envelope.rs:149-160`, `src/decmpfs.rs:59-80`), plus decmpfs
-  xattr/flag syscalls (`src/decmpfs.rs`). The one non-FFI primitive is
-  `segbuf_filled` (`src/envelope.rs:54-66`), whose `# Safety` contract —
-  `fill` initializes every byte — is what makes zero-copy decoding sound.
-  Every `unsafe` block carries a `// SAFETY:` comment; keep it that way.
+  xattr/flag syscalls (`src/decmpfs.rs`). The only `unsafe fn` defined in
+  the repo is `segbuf_filled` (`src/envelope.rs:54-66`), whose `# Safety`
+  contract — `fill` initializes every byte — is what makes zero-copy
+  decoding sound. New `unsafe` needs a `// SAFETY:` justification.
 
 ## Benchmarking discipline
 
-- Never run two benchmarks concurrently; every published number was taken
-  one tool at a time with nothing else running
-  (`doc/PERFORMANCE-NOTES.md:16-18,143-144`).
+- Never run two benchmarks concurrently; published numbers are one tool at
+  a time, nothing else running (`doc/PERFORMANCE-NOTES.md:16-18,143-144`).
 - Warm cache matters: all tuning was done warm, and CI primes the page
   cache with a warmup run (`perf.yml:95-97`).
 - Absolute seconds only compare within one machine
-  (`scripts/bench.sh:23-24`; `PERFORMANCE-NOTES.md:28-30`). The perf
-  workflow's budget is a single repo variable (`PERF_MAX_SECONDS`, default
-  120 s on `extract --dry-run`, `perf.yml:51,151-162`) and its header says
-  to compare runs only when the runner CPU matches.
-- Report run-to-run spread and sample size, not a single number — judge a
-  comparison by the standard error of the difference, not by σ alone
-  (`PERFORMANCE-NOTES.md:158-160`). `scripts/bench.sh` prints
-  mean/σ/min/CPU/RSS per variant.
+  (`scripts/bench.sh:23-24`; `PERFORMANCE-NOTES.md:28-30`). perf.yml has
+  one budget (`PERF_MAX_SECONDS` on `extract --dry-run`, `perf.yml:51`) and
+  compares runs only when the runner CPU matches (workflow header).
+- Report spread and sample size, not a single number; judge by the
+  standard error of the difference, not σ alone
+  (`PERFORMANCE-NOTES.md:158-160`; `bench.sh` prints mean/σ/min).
 
 ## Git attribution
 
 Commits and PRs use the maintainer's git identity with no AI attribution:
 no `Co-Authored-By` trailers naming an assistant or vendor, no "Generated
-with" lines, no `--author` or committer overrides. PR review is automated
+with" lines, no `--author`/committer overrides. PR review is automated
 separately (`.github/workflows/claude-code-review.yml`).
 
 ## Skills (informational)
 
 Interactive sessions on the maintainer's machine may have
-`rust-best-practices` and `rust-review` skills available. They are personal
-installs, not present in CI — nothing in this repo may depend on them.
+`rust-best-practices` / `rust-review` skills — personal installs, absent in
+CI; nothing in this repo may depend on them.
