@@ -474,8 +474,39 @@ the disk matters:
   `pwrite`. So the large `.pkg` payloads cost ~2 MiB of wasted encoding,
   not hundreds of MiB.
 
-Not yet measured on M4 Max. Not tried: encoding in a separate pool, so
-writers stay syscall-only; LZFSE for a better ratio at half the speed.
+**A shared encode pool was measured and rejected.** The hypothesis: encoding
+inside the owning writer serialises large files, so a pool that leaves writers
+syscall-only would recover the stall. It does not pay, and not because encoding
+is cheap. On an M4 Pro (10 performance + 4 efficiency cores, 64 GiB), 10
+writers, encode is **55% of writer busy time** — 39.4 core-seconds of a 71.7 s
+busy total across a 10.3 s run. Two other measurements close it:
+
+* **Encode work is flat across files.** 126,204 files, 9.25 GiB encoded: the
+  largest single file (182.9 MiB) is 1.9% of the total, the top 15 are 15.6%,
+  and the six files ≥128 MiB together are 7.4%; the bulk sits in the <8 MiB
+  bucket. Even perfectly parallelised, that largest file is ~0.75 s of
+  single-core encode — too short for a writer to be pinned usefully.
+* **The tail is already parallel.** Through the large-file tail, 4–10 writer
+  threads encode at once, peaking at 9.9. A pool would relocate the same 39.4
+  core-seconds onto the same cores and add no parallelism.
+
+Least-loaded routing (above) had already removed the queue-level head-of-line
+effect; this removes the within-file one as an explanation for the writer-count
+plateau at 10–14. Taken with a temporary probe behind `--features profile`, not
+upstreamed. The distribution is an archive property and so travels to other
+machines; the saturation numbers do not — they were taken where decoder plus
+writer demand exceeds the core count, and on a heterogeneous machine a
+per-logical-core throughput figure is misleading anyway, since a quarter of the
+threads land on efficiency cores.
+
+The same probe puts **`finish()`/xattr store at 19.25 s across ~125k compressed
+files (~154 µs each)** — bigger than `open`, and a better lever than encode
+parallelism if writer time is attacked again. The 39.4 core-seconds of encode
+also exceed the ~28 estimated from throughput above; different machine and
+different method (directly accounted vs derived), and the gap is unexplained.
+
+Not yet measured on M4 Max. Not tried: LZFSE for a better ratio at half the
+speed.
 
 ### The per-file store path measured (#67): real wall, half CPU, nothing removable
 
