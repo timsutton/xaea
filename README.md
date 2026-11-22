@@ -14,28 +14,30 @@ documented (including four errata in the public spec) in
 benchmarks — architecture rationale, tuning data, rejected experiments —
 is in [PERFORMANCE-NOTES.md](doc/PERFORMANCE-NOTES.md).
 
-## Install
+## Installing
 
-On macOS, install with [Homebrew](https://brew.sh):
+### Homebrew
+
+On macOS, install a prebuilt binary:
 
 ```sh
 brew install --cask timsutton/formulae/xaea
 ```
 
-Prebuilt macOS and Linux binaries are attached to every [GitHub
-release](https://github.com/timsutton/xaea/releases/latest) — a universal
-(x86_64 + arm64) binary for macOS, and x86_64 and aarch64 for Linux, each as a `.tar.gz` with the LICENSE, README and CHANGELOG
-alongside the binary, plus a `checksums.txt`:
-
+On Linux, you'll need to build from source, at least for now:
 ```sh
-# x86_64 Linux, as an example — swap the version and linux_amd64 for
-# linux_arm64 or darwin_universal as needed (Linux assets need
-# glibc ≥ 2.30: Ubuntu 20.04+, Debian 11+, RHEL 9+)
-curl -fsSL https://github.com/timsutton/xaea/releases/download/v0.1.0/xaea_0.1.0_linux_amd64.tar.gz | tar xz
-./xaea --help
+brew install --formula timsutton/formulae/xaea
 ```
 
-Or build from source (Rust ≥ 1.87): `cargo install --path .`.
+### Manually
+
+Prebuilt macOS and Linux binaries are available to download directly from [GitHub
+releases](https://github.com/timsutton/xaea/releases/latest).
+
+### Build from source
+
+`cargo install --path .`.
+
 
 ## Benchmarks
 
