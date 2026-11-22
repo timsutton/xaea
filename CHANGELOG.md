@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 0.2.0 - 2026-11-22
 
 ### Added
 
@@ -35,7 +35,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 * Performance improvements yielding roughly 10% faster extraction:
-  * Faster final symlink pass ([PR 55](https://github.com/timsutton/xaea/pull/55)
+  * Faster final symlink pass ([PR 55](https://github.com/timsutton/xaea/pull/55))
   * Reduce syscalls and liblzma improvements available on x86_64 systems ([PR 38](https://github.com/timsutton/xaea/pull/38))
 
 * `extract` now takes the output directory as an optional
