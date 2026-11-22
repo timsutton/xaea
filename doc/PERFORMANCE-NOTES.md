@@ -473,10 +473,94 @@ scripts/bench.sh -d -r 10 'w4=-w 4' 'w6=-w 6'
 
 Warm the cache first (extract once to /dev/null-ish, or just discard the
 first run). The CI `perf` workflow (hyperfine, warmup run, throughput =
-payload bytes / mean wall) tracks the same numbers on every PR; a budget
-gate (fail the run above N seconds) is planned there.
+payload bytes / mean wall) tracks the same numbers on every PR and gates
+`extract --dry-run` against a time budget — see "The CI time limit" below.
 
 Platform caveat: all of the above was tuned on macOS/APFS by design. On
 Linux the code builds and runs cleanly, but treat the defaults as
 starting points — re-run the grid via `--jobs`/`--writers` before
 trusting them.
+
+## The CI time limit
+
+The `perf` workflow fails a PR when the mean `extract --dry-run` of the
+fixture exceeds a budget. That budget is written down in exactly one
+place: the `BUDGET_S` table in the workflow's **Enforce time limit**
+step. There is no repo variable and no built-in fallback, so an unset
+override can never silently *become* the limit; the only override is the
+`max_seconds` input on a manual dispatch. Changing a number means
+changing the table in a PR, next to the sentence that says where it came
+from.
+
+**Why a table and not one number.** `macos-latest` hands out more than
+one CPU class, and they are ~2.5× apart on identical code — this is not
+run-to-run noise. Every macOS run of the workflow, `extract --dry-run`
+mean (runs 4–10 predate the move to macOS and ran on `ubuntu-latest`
+with 2 cores, so they are excluded):
+
+| runner class | runs | median | mean | σ | best | worst |
+|---|---|---|---|---|---|---|
+| Apple M1 | 11 | 51.2 s | 50.8 s | 4.0 s (8.0%) | 42.6 s (run 30, `44776615133`) | 58.1 s (run 31, `44842974297`) |
+| Apple M2 Pro | 2 | 19.9 s | 19.9 s | 0.9 s (4.4%) | 19.3 s (run 14, `44649572304`) | 20.5 s (run 24, `44673516861`) |
+
+M1 runs: 12, 13, 15, 16, 17, 20, 23, 29, 30, 31, 33. M2 Pro runs: 14,
+24. The old single limit of 70 s was 1.37× the M1 median — defensible
+there — but 3.5× the M2 Pro median, i.e. no gate at all on a fast runner.
+
+**The rule: 1.25 × the class median.** For M1 that is 64.0 s, which is
+also 1.10 × the worst M1 run ever observed (58.1 s) — the two ways of
+saying "clearly outside real noise, close enough to catch a real
+regression" land on the same number, so 64 s is the budget. In effect: a
+PR that slows the dry run ~25% over the M1 median sits exactly on the
+line and worse fails; a ~15% regression fails on some runs and not
+others, which is the resolution a 3-run hyperfine on a shared runner
+actually buys. Tightening further means raising `runs`, not the budget.
+
+M2 Pro is **28 s**, deliberately looser (1.41× its median, 1.37× its
+worst) because the sample is two runs — both taken *before* the decode
+work in #38 landed, so the baseline is conservative for current code.
+Re-derive it once ≥5 M2 Pro runs exist.
+
+An unrecognised CPU keeps the loosest known budget and warns by name
+(a `::warning::` annotation, not just a log line), instead of guessing a
+number for hardware nobody has measured; add it to the table when GitHub
+rotates the fleet.
+
+**Match the CPU string carefully.** `sysctl -n machdep.cpu.brand_string`
+on GitHub's macOS runners returns `Apple M1 (Virtual)` — with the
+virtualisation suffix — not `Apple M1`. The gate strips a trailing
+parenthetical before the lookup so the table can key on the chip and
+works on hosted and bare-metal runners alike. This was not a theoretical
+worry: the first version of the table keyed on the bare chip name, every
+run silently took the unknown-CPU branch, and only the live run surfaced
+it (the warning did its job). Re-read the warning text of a real run
+before trusting any CPU-keyed table.
+
+The run that surfaced it is itself a useful data point: `44867418567`
+measured 47.50 s on an `Apple M1 (Virtual)`. Adding it makes the M1
+sample n=12 with median 50.9 s, and 1.25× that is 63.7 s — the 64 s
+budget stands unchanged.
+
+**What is not gated, and why.** Within the read-only job the three
+benchmarks are within 1.2× of each other (M1 medians: `inspect --verify`
+42.9 s, `extract --dry-run` 51.2 s, `--dry-run --no-verify` 48.3 s), so
+they do not need separate budgets — `--dry-run` is the cheapest and least
+noisy, so it is the one that gates. The order-of-magnitude difference is
+the opt-in full extract, which has no budget at all — since APFS
+compression became the default that step times two benchmarks, the
+compressed default and `--no-compress`, and the gate reads only
+`perf/readonly.json`, so neither is covered. If full extract ever stops
+being opt-in, each variant needs its own row, budgeted from measured CI
+history per CPU class like the table above — not a guessed number.
+
+Re-deriving the numbers from CI history (no local benchmarking needed):
+
+```sh
+gh run list --workflow perf.yml --limit 30 --json databaseId,conclusion
+gh run download <run-id> -n perf-results -D <dir>   # small hyperfine JSON
+# results[].summary.time_wall_clock.mean for "extract --dry-run", grouped
+# by the CPU in that run's "Runner info" step (sysctl machdep.cpu.brand_string)
+```
+
+Exclude pre-macOS runs, strip the ` (Virtual)` suffix from the CPU string
+before grouping, then take the median and the worst of each class.
