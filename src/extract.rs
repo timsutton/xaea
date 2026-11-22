@@ -1056,15 +1056,12 @@ struct SegInfo {
 /// pass concurrently with the pipeline (joined before the final pass).
 fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
     let chain = env
-        .auth
-        .iter()
-        .find(|(k, _)| k.ends_with(".signature.certificate-chain"))
-        .map(|(_, v)| v.clone())
+        .certificate_chain()
         .context("no certificate-chain auth pair")?;
     let auth = crate::sigverify::verify_all(
-        &chain,
+        chain,
         crate::sigverify::APPLE_ROOTS,
-        &env.file[env.sig_off..env.sig_off + crate::envelope::SIGNATURE_LEN],
+        env.signature(),
         &env.signed_prefix(),
     )
     .context("signature/chain verification")?;

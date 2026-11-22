@@ -144,9 +144,6 @@ impl<'a> Der<'a> {
 pub struct ParsedCert {
     pub subject: String,
     pub issuer: String,
-    pub serial: String,
-    pub not_before: String,
-    pub not_after: String,
     /// Validity window as unix seconds (for the `valid_now` policy check).
     pub not_before_ts: i64,
     pub not_after_ts: i64,
@@ -278,9 +275,6 @@ pub fn parse_cert(der: &[u8]) -> Result<ParsedCert> {
     Ok(ParsedCert {
         subject: name.subject.to_string(),
         issuer: name.issuer.to_string(),
-        serial: name.serial.to_str_radix(16),
-        not_before: name.validity.not_before.to_string(),
-        not_after: name.validity.not_after.to_string(),
         not_before_ts: name.validity.not_before.timestamp(),
         not_after_ts: name.validity.not_after.timestamp(),
         basic_ca,

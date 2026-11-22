@@ -509,6 +509,19 @@ impl<'a> Envelope<'a> {
         out
     }
 
+    /// The PEM signing-certificate chain from the auth data, if present.
+    pub fn certificate_chain(&self) -> Option<&[u8]> {
+        self.auth
+            .iter()
+            .find(|(k, _)| k.ends_with(".signature.certificate-chain"))
+            .map(|(_, v)| v.as_slice())
+    }
+
+    /// The fixed-size signature field (DER signature, zero padded).
+    pub fn signature(&self) -> &'a [u8] {
+        &self.file[self.sig_off..self.sig_off + SIGNATURE_LEN]
+    }
+
     /// Bytes covered by the file signature (prefix through the first cluster
     /// MAC), with the 128-byte signature field nulled as the spec requires.
     pub fn signed_prefix(&self) -> Vec<u8> {
