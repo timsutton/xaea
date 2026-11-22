@@ -13,6 +13,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   conventions). Full table in [doc/ERROR-CODES.md](doc/ERROR-CODES.md).
 * One-letter subcommand shorthands: `xaea x` for `extract` and `xaea i` for
   `inspect`.
+* The `extract` summary now names the effective core count alongside the
+  decoder/writer thread counts (`… 15 decoders, 6 writers on 16 cores`);
+  `--json` gains a matching `cores` field.
 * `extract --readahead N`: how many decoded segments are buffered ahead of
   the writers. The default now scales with your RAM, which speeds up large
   extractions at the cost of some memory; lower it to use less.
