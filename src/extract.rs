@@ -587,17 +587,20 @@ fn least_loaded(load: &[AtomicU64], start: usize) -> usize {
 /// a directory's files prefer the writer that took its first record (its
 /// mkdir, or its first file when the archive has none), and spill to the
 /// least-loaded writer once that writer's outstanding work exceeds `N` —
-/// the same byte unit as [`Load`]. Pure directory routing was measured and
-/// rejected in the PR #38 round (a big directory pins one writer and the
-/// parser blocks behind its full queue); the spill threshold is what makes
-/// affinity worth retrying.
+/// the same byte unit as [`Load`]. Measured and rejected as a default on
+/// the M4 Pro mini (doc/PERFORMANCE-NOTES.md, "#46"): every threshold that
+/// binds loses 1–4 s of wall to collapsed writer parallelism, and the one
+/// that spills eagerly enough to stay neutral leaves no locality left to
+/// pay for itself. The knob stays for machines where the trade may differ.
 #[derive(Clone, Copy)]
 struct DirRoute {
     spill: u64,
 }
 
-/// Default spill threshold: roughly one writer queue of small-file opens
-/// (32 × [`OPEN_COST`]).
+/// Default spill threshold: 32 × [`OPEN_COST`], i.e. one queue of pure
+/// opens — but a real file also counts its slice bytes, so this is only
+/// ~9 average files of queued work and spills late; #46 measured it to
+/// behave near pure directory routing. `dir:256k` is the spill-eager end.
 const DIR_SPILL_DEFAULT: u64 = 1 << 20;
 
 impl DirRoute {
