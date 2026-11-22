@@ -53,12 +53,7 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
         // 10 → 12.6 s, 14 → 12.4 s for the Xcode 27.3 b2 archive.
         writers: args.writers.unwrap_or(if compress { 10 } else { 6 }),
         readahead: args.readahead.unwrap_or_else(|| {
-            let largest = env
-                .segments()
-                .iter()
-                .map(|s| s.orig as usize)
-                .max()
-                .unwrap_or(0);
+            let largest = env.segments().map(|s| s.orig as usize).max().unwrap_or(0);
             extract::default_readahead(extract::physical_ram(), largest, decoders)
         }),
         prealloc: args.prealloc,

@@ -2,7 +2,7 @@
 
 use super::{human, open_archive};
 use crate::cli::InspectArgs;
-use crate::envelope::{self, Envelope};
+use crate::envelope::Envelope;
 use crate::exit::{Exit, WithExit, bail_exit};
 use crate::sigverify::{self, ParsedCert};
 use anyhow::{Context, Result};
@@ -42,8 +42,8 @@ pub fn run(args: &InspectArgs) -> Result<()> {
                 "encarchive_size": env.root.encarchive_size,
                 "segment_size": env.root.segment_size,
                 "segments_per_cluster": env.root.segments_per_cluster,
-                "compression": envelope::compression_name(env.root.compression),
-                "checksum": envelope::checksum_name(env.root.checksum),
+                "compression": env.root.compression.to_string(),
+                "checksum": env.root.checksum.to_string(),
             },
             "clusters": env.clusters.len(),
             "segments": env.total_segments,
@@ -77,8 +77,8 @@ pub fn run(args: &InspectArgs) -> Result<()> {
         human(u64::from(env.root.segment_size)),
         env.clusters.len(),
         env.root.segments_per_cluster,
-        envelope::checksum_name(env.root.checksum),
-        envelope::compression_name(env.root.compression),
+        env.root.checksum,
+        env.root.compression,
     );
     println!("  geometry: segment walk lands exactly on EOF ✓");
     for (k, v) in &env.auth {

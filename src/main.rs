@@ -9,6 +9,7 @@ mod kdf;
 mod prof;
 mod sigverify;
 mod spool;
+mod xz;
 
 use clap::Parser;
 use cli::{Cli, Commands};

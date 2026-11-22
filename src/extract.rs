@@ -50,8 +50,10 @@
 
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::decmpfs;
-use crate::envelope::{Envelope, XzDecoder};
+use crate::envelope::{Checksum, Envelope};
+use crate::kdf::Key;
 use crate::prof::{self, C, K};
+use crate::xz::{self, XzDecoder};
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -1009,7 +1011,7 @@ fn decode_segment(
     dec: XzDecoder,
 ) -> Result<Arc<[u8]>> {
     // Both arms produce the shared segment buffer directly (no Vec -> Arc
-    // copy; see envelope::segbuf_filled).
+    // copy; see xz::segbuf_filled).
     let buf: Arc<[u8]> = if comp == orig {
         let len = orig as usize;
         let fill = |dst: *mut u8| -> Result<()> {
@@ -1022,11 +1024,11 @@ fn decode_segment(
             read_pread_into(fh, data_off, s)
         };
         // SAFETY: `fill` initialized all `len` bytes (zeroed, then read).
-        unsafe { crate::envelope::segbuf_filled(len, fill)? }
+        unsafe { xz::segbuf_filled(len, fill)? }
     } else {
         let raw = prof::time(C::DPread, || read_pread(fh, data_off, comp as usize))?;
         prof::time(C::DDecode, || {
-            crate::envelope::decode_xz(&raw, orig as usize, dec, expect.is_some())
+            xz::decode(&raw, orig as usize, dec, expect.is_some())
         })?
     };
     if let Some(want) = expect {
@@ -1054,7 +1056,7 @@ struct SegInfo {
 /// then the root/cluster header MACs — microseconds next to decoding.
 /// Returns the main key so the caller can run the expensive segment-MAC
 /// pass concurrently with the pipeline (joined before the final pass).
-fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
+fn verify_upfront(env: &Envelope) -> Result<Key> {
     let chain = env
         .certificate_chain()
         .context("no certificate-chain auth pair")?;
@@ -1080,10 +1082,9 @@ fn verify_upfront(env: &Envelope) -> Result<Vec<u8>> {
         );
     }
     let main = env.main_key(auth.certs[0].point());
-    let (root_mac_ok, cluster_macs_ok, _) =
-        env.verify_header_macs(&main).context("MAC verification")?;
-    ensure!(root_mac_ok, "root header MAC mismatch");
-    ensure!(cluster_macs_ok, "cluster header MAC mismatch");
+    let macs = env.verify_header_macs(&main);
+    ensure!(macs.root_ok, "root header MAC mismatch");
+    ensure!(macs.clusters_ok, "cluster header MAC mismatch");
     Ok(main)
 }
 
@@ -1095,10 +1096,10 @@ pub fn extract(env: &Envelope, src: &Path, opts: &Opts) -> Result<Stats> {
     // checksums still gate every write inline in the decoder threads.
     let main = if opts.verify {
         anyhow::ensure!(
-            env.root.checksum == 2,
+            env.root.checksum == Checksum::Sha256,
             "extract verification enforces SHA-256 segment checksums; this archive \
              declares {} — use --no-verify to extract anyway",
-            crate::envelope::checksum_name(env.root.checksum)
+            env.root.checksum
         );
         Some(verify_upfront(env)?)
     } else {
@@ -1131,7 +1132,6 @@ fn extract_body(
     let ck = opts.verify.then_some(());
     let segs: Arc<Vec<SegInfo>> = Arc::new(
         env.segments()
-            .iter()
             .map(|s| SegInfo {
                 off: s.data_off as u64,
                 comp: s.comp,

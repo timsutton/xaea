@@ -1,7 +1,7 @@
 //! Command-line interface definition.
 
-use crate::envelope::XzDecoder;
 use crate::extract::Compress;
+use crate::xz::XzDecoder;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
