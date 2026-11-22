@@ -38,6 +38,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   capitals (`Payload/up` plus `Payload/up/under`) is now refused, where it
   used to be created through the first link and land outside the output
   directory the archive named.
+* Clearer `--help` text: flag descriptions state defaults and costs more
+  consistently, `--readahead` and `--writers` were reworded, `inspect
+  --verify` documents its non-zero exit, and `extract` notes that a failed
+  run leaves partial output.
 
 * Faster extraction: a full Xcode extract is roughly 5–13% faster than
   0.1.3, from leaner segment decoding and fewer filesystem calls.

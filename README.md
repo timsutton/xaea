@@ -87,7 +87,8 @@ xaea extract Xcode_27.3_beta_2.aea ~/Applications
 The output directory may already exist and hold other files. `extract` aborts
 before writing anything if the archive's top-level entry (e.g. `Xcode.app`)
 already exists there, so it never merges into or overwrites an existing app.
-`--dry-run` runs the same check.
+`--dry-run` runs the same check. If a run fails partway, files already
+written are left in place; remove them before retrying.
 
 Subcommands have one-letter shorthands: `xaea x …` is `xaea extract …`
 and `xaea i …` is `xaea inspect …`.
@@ -104,7 +105,7 @@ Options on `extract`:
 | `-j/--jobs` | decoder threads (default: cores−1, min 2) |
 | `-w/--writers` | writer threads (default: 10 when compressing, else 6 — measured optima on APFS/NVMe) |
 | `--no-compress` | write plain files. By default on macOS, files are stored with transparent APFS compression (LZBITMAP decmpfs), as Apple's `archiveutil` does: an Xcode tree takes 3.86 GiB on disk instead of 9.99 GiB, for ~50% more extraction time (12.3 s vs 8.0 s on M3 Max). On a volume that can't hold compressed files (exFAT, most network shares) plain files are written automatically; pass `--compress` to get a warning when that happens. Linux always writes plain files. |
-| `--readahead` | decoded segments (~16 MiB each) buffered ahead of the parser (default: 1/8 of RAM worth, between decoders+4 and 160 — 128 on 16 GB, 160 from 32 GB; lower it to cut peak memory, e.g. `--readahead 19` ≈ 3.2 GiB peak vs ≈ 5 GiB) |
+| `--readahead` | decoded segments (~16 MiB each) buffered ahead of the parser (default: 1/8 of RAM, between decoders+4 and 160 — 128 on 16 GB, 160 from 32 GB; lower it to cut peak memory, e.g. `--readahead 19` ≈ 3.2 GiB peak vs ≈ 5 GiB) |
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
 | `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |
