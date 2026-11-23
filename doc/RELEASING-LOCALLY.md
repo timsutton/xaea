@@ -38,7 +38,9 @@ Local snapshots are unsigned: signing only runs when `MACOS_SIGN_P12` is set.
 ## Dry-running in CI instead
 
 Actions → Release → Run workflow, with **snapshot** ticked, does the same
-thing on a GitHub macOS runner and publishes nothing.
+thing on a GitHub macOS runner and publishes nothing. The job runs in the
+`release` environment, so if that environment has required reviewers
+enabled, even a snapshot dispatch waits for one before starting.
 
 ## What a real release adds
 

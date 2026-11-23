@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 0.2.0 - 2026-11-22
 
+### Security
+
+* Release signing and notarization credentials are now scoped to a protected
+  `release` GitHub environment instead of being repository-wide secrets.
+
 ### Added
 
 * Documented exit codes as a stability contract: 0 success, 2 usage, 3
