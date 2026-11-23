@@ -19,7 +19,7 @@ There's a convention of using a `fixtures` directory to contain .aea files from 
 - Do all work in a dedicated branch, in isolated git worktrees. Start new work from the upstream `main` unless the work is explicitly being derived from another work-in-progress branch.
 - Never merge `main` into a work branch. If you need to fix merge conflicts, do it by rebasing on top of the upstream `main`.
 
-## When the branch is green, open a pull request — don't wait to be asked
+## Opening pull requests
 
 Once `fmt`, `clippy`, and `test` pass locally, push a descriptively-named branch and open a PR with `gh pr create --base main`, with `Fixes #N` in the body when the work maps to an issue. Do not wait to be asked.
 
