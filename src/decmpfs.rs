@@ -46,11 +46,6 @@ const TYPE_RSRC: u32 = 14;
 /// encoding them only to decode them again is wasted CPU.
 const GIVE_UP_AFTER: u64 = 2 << 20;
 
-/// Files that should have been stored compressed but that the volume
-/// refused (then written plain). The up-front [`probe`] makes this rare;
-/// the extractor warns when it isn't zero.
-pub static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 #[cfg(target_os = "macos")]
 mod ffi {
     /// COMPRESSION_LZBITMAP (<compression.h>, macOS 12+).
@@ -154,11 +149,13 @@ fn fsetxattr(f: &File, name: &std::ffi::CStr, val: &[u8]) -> std::io::Result<()>
 fn set_compressed_flag(f: &File) -> std::io::Result<()> {
     // fchflags *replaces* the flag word: a fresh file has none set, but keep
     // whatever is there anyway.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `st` is a valid out-buffer for fstat.
-    if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } != 0 {
+    if unsafe { libc::fstat(f.as_raw_fd(), st.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: fstat succeeded, so it filled `st`.
+    let st = unsafe { st.assume_init() };
     // SAFETY: plain syscall on an fd we own.
     if unsafe { libc::fchflags(f.as_raw_fd(), st.st_flags | libc::UF_COMPRESSED) } == 0 {
         Ok(())
@@ -176,14 +173,28 @@ fn set_compressed_flag(_: &File) -> std::io::Result<()> {
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
+/// Best-effort removal of a half-applied compression.
+#[cfg(target_os = "macos")]
+fn undo(f: &File) {
+    for name in [c"com.apple.ResourceFork", c"com.apple.decmpfs"] {
+        // SAFETY: plain syscall on an open fd with a NUL-terminated name.
+        unsafe { libc::fremovexattr(f.as_raw_fd(), name.as_ptr(), libc::XATTR_SHOWCOMPRESSION) };
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn undo(_: &File) {}
+
 /// What [`Encoder::finish`] did with the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// Stored compressed; the data fork stays empty.
     Compressed,
-    /// Written as a plain file (compression didn't pay, or the volume
-    /// refused the xattrs/flag).
+    /// Written as a plain file: compression didn't pay.
     Plain,
+    /// Written as a plain file because the volume refused the xattrs or
+    /// the flag. The up-front [`probe`] makes this rare; the extractor
+    /// warns when it happens.
+    Refused,
 }
 
 /// Streaming per-file encoder. One per writer thread, reused across files:
@@ -319,13 +330,12 @@ impl Encoder {
             if fsetxattr(f, c"com.apple.decmpfs", &x).is_ok() && set_compressed_flag(f).is_ok() {
                 return Ok(Outcome::Compressed);
             }
-            self.undo(f);
-            REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return self.write_plain(f).map(|()| Outcome::Plain);
+            undo(f);
+            return self.spill(f).map(|()| Outcome::Refused);
         }
         let worth = (end as u64).div_ceil(BLOCK) < self.size.div_ceil(BLOCK);
         if !worth {
-            return self.write_plain(f).map(|()| Outcome::Plain);
+            return self.spill(f).map(|()| Outcome::Plain);
         }
         ensure!(
             end <= u32::MAX as usize,
@@ -341,28 +351,8 @@ impl Encoder {
         {
             return Ok(Outcome::Compressed);
         }
-        self.undo(f);
-        REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.write_plain(f).map(|()| Outcome::Plain)
-    }
-
-    /// Best-effort removal of a half-applied compression.
-    fn undo(&self, f: &File) {
-        #[cfg(target_os = "macos")]
-        // SAFETY: plain syscalls on an fd we own with NUL-terminated names.
-        unsafe {
-            libc::fremovexattr(
-                f.as_raw_fd(),
-                c"com.apple.ResourceFork".as_ptr(),
-                libc::XATTR_SHOWCOMPRESSION,
-            );
-            libc::fremovexattr(
-                f.as_raw_fd(),
-                c"com.apple.decmpfs".as_ptr(),
-                libc::XATTR_SHOWCOMPRESSION,
-            );
-        }
-        let _ = f;
+        undo(f);
+        self.spill(f).map(|()| Outcome::Refused)
     }
 
     /// Write everything fed so far as plain bytes at offset 0 (decoding the
@@ -371,10 +361,9 @@ impl Encoder {
         let mut buf = vec![0u8; CHUNK];
         let table = (self.nchunks + 1) * 4;
         for i in 0..self.next_chunk {
-            let start =
-                u32::from_le_bytes(self.rsrc[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+            let start = self.table_entry(i);
             let end = if i + 1 < self.next_chunk {
-                u32::from_le_bytes(self.rsrc[i * 4 + 4..i * 4 + 8].try_into().unwrap()) as usize
+                self.table_entry(i + 1)
             } else {
                 self.rsrc.len()
             };
@@ -401,8 +390,10 @@ impl Encoder {
         Ok(())
     }
 
-    fn write_plain(&mut self, f: &File) -> Result<()> {
-        self.spill(f)
+    /// Entry `i` of the resource fork's offset table.
+    fn table_entry(&self, i: usize) -> usize {
+        let at = &self.rsrc[i * 4..];
+        u32::from_le_bytes(*at.first_chunk().expect("offset table entry")) as usize
     }
 }
 

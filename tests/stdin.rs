@@ -7,59 +7,20 @@
 //! Skipped (with a notice) when python3 or the `cryptography` package is
 //! unavailable, so `cargo test` never fails merely for missing tooling.
 
+mod common;
+
+use common::{build_archive, manifest, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
-fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
-}
-
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "xaea-stdin-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    fs::create_dir_all(&d).unwrap();
-    d
-}
+use std::process::Stdio;
 
 /// Build the synthetic archive; returns (dir, manifest, archive bytes).
 /// `None` = skip.
 fn synthetic(tag: &str) -> Option<(PathBuf, Value, Vec<u8>)> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_crypto {
-        eprintln!("SKIP {tag}: python3 with `cryptography` not available");
-        return None;
-    }
-    let dir = tmpdir(tag);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py");
-    let out = Command::new("python3")
-        .args(["-I"])
-        .arg(&script)
-        .arg(&dir)
-        .arg("--seed")
-        .arg("1")
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let manifest: Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    let dir = build_archive(tag, &[])?;
+    let manifest = manifest(&dir);
     let bytes = fs::read(dir.join("archive.aea")).unwrap();
     Some((dir, manifest, bytes))
 }

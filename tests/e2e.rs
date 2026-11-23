@@ -10,60 +10,20 @@
 //! Skipped (with a notice) when python3 or the `cryptography` package is
 //! unavailable, so `cargo test` never fails merely for missing tooling.
 
+mod common;
+
+use common::{build_archive, check, manifest, xaea};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
-}
-
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "xaea-e2e-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    fs::create_dir_all(&d).unwrap();
-    d
-}
 
 /// Build the synthetic archive; returns (dir, manifest). `None` = skip.
 fn synthetic(tag: &str) -> Option<(PathBuf, Value)> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_crypto {
-        eprintln!("SKIP {tag}: python3 with `cryptography` not available");
-        return None;
-    }
-    let dir = tmpdir(tag);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py");
-    let out = Command::new("python3")
-        .args(["-I"])
-        .arg(&script)
-        .arg(&dir)
-        .arg("--seed")
-        .arg("1")
-        .arg("--evil")
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let manifest: Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    let dir = build_archive(tag, &["--evil"])?;
+    let manifest = manifest(&dir);
     Some((dir, manifest))
 }
 
@@ -80,17 +40,6 @@ fn inspect(dir: &Path, extra: &[&str]) -> Value {
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_slice(&out.stdout).unwrap()
-}
-
-fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
-    v["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c.get(key).is_some())
-        .unwrap_or_else(|| panic!("no check object containing {key}"))
-        .get(key)
-        .unwrap()
 }
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -247,7 +196,10 @@ fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Valu
                 h.update(&got);
                 // sha2 0.11 output arrays no longer Display as hex
                 let digest: [u8; 32] = h.finalize().into();
-                let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                let hex = digest.iter().fold(String::new(), |mut s, b| {
+                    let _ = write!(s, "{b:02x}");
+                    s
+                });
                 assert_eq!(hex, e["sha256"].as_str().unwrap());
                 assert_eq!(
                     mode_of(&p),

@@ -8,14 +8,12 @@
 //! archive from scripts/make_test_aea.py (same builder tests/e2e.rs uses);
 //! those tests skip when python3 or its `cryptography` package is missing.
 
+mod common;
+
+use common::{build_archive, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
-}
 
 /// Run xaea, return its exit code.
 fn code(args: &[&str]) -> i32 {
@@ -27,48 +25,9 @@ fn code(args: &[&str]) -> i32 {
     out.status.code().unwrap()
 }
 
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "xaea-exits-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    fs::create_dir_all(&d).unwrap();
-    d
-}
-
 /// Build the synthetic signed archive; returns its path. `None` = skip.
 fn synthetic(tag: &str) -> Option<PathBuf> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_crypto {
-        eprintln!("SKIP {tag}: python3 with `cryptography` not available");
-        return None;
-    }
-    let dir = tmpdir(tag);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py");
-    let out = Command::new("python3")
-        .args(["-I"])
-        .arg(&script)
-        .arg(&dir)
-        .arg("--seed")
-        .arg("1")
-        .arg("--evil")
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(dir.join("archive.aea"))
+    build_archive(tag, &["--evil"]).map(|dir| dir.join("archive.aea"))
 }
 
 /// Copy `src` to `dst`, flipping one bit at `off`.

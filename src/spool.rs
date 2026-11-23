@@ -58,8 +58,7 @@ pub fn resolve(path: &Path) -> Result<Input> {
     let path = spool.path().to_path_buf();
     let dir = path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
+        .map_or_else(std::env::temp_dir, Path::to_path_buf);
     let mut stdin = std::io::stdin().lock();
     let mut buf = vec![0u8; 1 << 20];
     let mut total = 0u64;

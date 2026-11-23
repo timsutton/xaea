@@ -8,27 +8,20 @@
 //!
 //! Override the path with `AEA_FIXTURE=/path/to/file.aea`.
 
+mod common;
+
+use common::check;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
-    v["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c.get(key).is_some())
-        .unwrap_or_else(|| panic!("no check object containing {key}"))
-        .get(key)
-        .unwrap()
-}
-
 #[test]
 #[ignore = "requires the multi-GB Xcode fixture; run with --ignored"]
 fn real_fixture_verifies_green() {
-    let path = std::env::var("AEA_FIXTURE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("fixtures/Xcode_27.3_beta_2.aea"));
+    let path = std::env::var("AEA_FIXTURE").map_or_else(
+        |_| PathBuf::from("fixtures/Xcode_27.3_beta_2.aea"),
+        PathBuf::from,
+    );
     if !path.exists() {
         eprintln!("SKIP: fixture not found at {}", path.display());
         return;

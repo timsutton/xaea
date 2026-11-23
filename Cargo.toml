@@ -2,9 +2,10 @@
 name = "xaea"
 version = "0.2.0"
 edition = "2024"
-# RustCrypto floor: rsa 0.10 / crypto-bigint >=0.7.6 (the patched versions for
-# RUSTSEC-2023-0071 / RUSTSEC-2026-0387) both declare 1.87.
-rust-version = "1.87"
+# The code uses let-chains (1.88), and the locked sha2 0.11 and time 0.3
+# declare 1.88 too. (The RustCrypto security floor, rsa 0.10 /
+# crypto-bigint >=0.7.6 for RUSTSEC-2023-0071 / RUSTSEC-2026-0387, is 1.87.)
+rust-version = "1.88"
 description = "Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition"
 license = "MIT"
 
@@ -44,3 +45,28 @@ liblzma = { version = "0.4", features = ["static"] }
 
 [profile.release]
 lto = true
+
+# CI runs clippy with -D warnings, so these are enforced. A deliberately
+# small subset of clippy::pedantic: the lints that catch real problems in
+# this codebase, not the cast-precision noise of byte-offset arithmetic.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+borrow_as_ptr = "warn"
+cast_lossless = "warn"
+format_collect = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+match_same_arms = "warn"
+needless_pass_by_value = "warn"
+ptr_as_ptr = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+single_match_else = "warn"
+trivially_copy_pass_by_ref = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+used_underscore_binding = "warn"

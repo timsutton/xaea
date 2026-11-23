@@ -6,12 +6,20 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
-pub fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8], len: usize) -> Vec<u8> {
-    let mut okm = vec![0u8; len];
+/// Every key in the AEA HMAC key tree is 32 bytes.
+pub type Key = [u8; 32];
+
+fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> Key {
+    let mut okm = [0u8; 32];
     hkdf::Hkdf::<Sha256>::new(Some(salt), ikm)
         .expand(info, &mut okm)
         .expect("HKDF expand of fixed size cannot fail");
     okm
+}
+
+/// `prefix || index` (little-endian), the info string of the indexed keys.
+fn indexed_info(prefix: &[u8], index: u32) -> Vec<u8> {
+    [prefix, &index.to_le_bytes()].concat()
 }
 
 /// MAC calculation (kinnay FORMAT.md): HMAC-SHA256 over `salt || data || u64le(len(salt))`.
@@ -28,38 +36,33 @@ pub fn mac(key: &[u8], data: &[u8], salt: &[u8]) -> [u8; 32] {
 /// Info string: "AEA_AMK" + file header bytes 4..8 + (if the profile signs)
 /// the uncompressed X9.62 encoding of the signing public key. Verified
 /// against the real Xcode 27.3 b2 artifact.
-pub fn main_key(ikm: &[u8], main_salt: &[u8], header_4_8: &[u8], signing_point: &[u8]) -> Vec<u8> {
-    let mut info = b"AEA_AMK".to_vec();
-    info.extend_from_slice(header_4_8);
-    info.extend_from_slice(signing_point);
-    hkdf(ikm, main_salt, &info, 32)
+pub fn main_key(ikm: &[u8], main_salt: &[u8], header_4_8: &[u8], signing_point: &[u8]) -> Key {
+    let info = [b"AEA_AMK".as_slice(), header_4_8, signing_point].concat();
+    hkdf(ikm, main_salt, &info)
 }
 
-pub fn root_header_key(main_key: &[u8]) -> Vec<u8> {
-    hkdf(main_key, b"", b"AEA_RHEK", 32)
+pub fn root_header_key(main_key: &Key) -> Key {
+    hkdf(main_key, b"", b"AEA_RHEK")
 }
 
-pub fn cluster_key(main_key: &[u8], cluster_index: u32) -> Vec<u8> {
-    let mut info = b"AEA_CK".to_vec();
-    info.extend_from_slice(&cluster_index.to_le_bytes());
-    hkdf(main_key, b"", &info, 32)
+pub fn cluster_key(main_key: &Key, cluster_index: u32) -> Key {
+    hkdf(main_key, b"", &indexed_info(b"AEA_CK", cluster_index))
 }
 
-pub fn cluster_header_key(ck: &[u8]) -> Vec<u8> {
-    hkdf(ck, b"", b"AEA_CHEK", 32)
+pub fn cluster_header_key(ck: &Key) -> Key {
+    hkdf(ck, b"", b"AEA_CHEK")
 }
 
 /// Segment key. `segment_index` is the cluster-**local** index (verified on
 /// Xcode 27.3 b2: global index fails from cluster 1 onward).
-pub fn segment_key(ck: &[u8], segment_index: u32) -> Vec<u8> {
-    let mut info = b"AEA_SK".to_vec();
-    info.extend_from_slice(&segment_index.to_le_bytes());
-    hkdf(ck, b"", &info, 32)
+pub fn segment_key(ck: &Key, segment_index: u32) -> Key {
+    hkdf(ck, b"", &indexed_info(b"AEA_SK", segment_index))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -68,7 +71,10 @@ mod tests {
             .collect()
     }
     fn tohex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
     }
 
     // Deterministic reference vectors from scripts/make_test_aea.py (seed 1).

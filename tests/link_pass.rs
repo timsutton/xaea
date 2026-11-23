@@ -12,63 +12,20 @@
 //! `scripts/make_test_aea.py`; skipped with a notice when python3 or the
 //! `cryptography` package is unavailable, like `tests/e2e.rs`.
 
+mod common;
+
+use common::{build_archive, xaea};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Link count for the many-links archive: comfortably past the extractor's
 /// parallel-path threshold, small enough to build and extract fast.
 const MANY_LINKS: usize = 1200;
 
-fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
-}
-
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "xaea-linkpass-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    fs::create_dir_all(&d).unwrap();
-    d
-}
-
 /// Build the adversarial and many-links archives; `None` = skip the test.
 fn build(tag: &str, links: usize) -> Option<PathBuf> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_crypto {
-        eprintln!("SKIP {tag}: python3 with `cryptography` not available");
-        return None;
-    }
-    let dir = tmpdir(tag);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py");
-    let out = Command::new("python3")
-        .args(["-I"])
-        .arg(&script)
-        .arg(&dir)
-        .arg("--seed")
-        .arg("1")
-        .arg("--evil")
-        .arg("--links")
-        .arg(links.to_string())
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(dir)
+    build_archive(tag, &["--evil", "--links", &links.to_string()])
 }
 
 fn extract(archive: &Path, out: &Path, extra: &[&str]) -> std::process::Output {
