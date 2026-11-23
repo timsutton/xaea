@@ -59,6 +59,8 @@ pub(super) fn create_defaults() -> (u32, u32) {
         libc::umask(m);
         m
     };
+    // mode_t is u16 on macOS but already u32 on Linux.
+    #[allow(clippy::useless_conversion)]
     let mask = u32::from(mask);
     (0o666 & !mask, 0o777 & !mask)
 }
