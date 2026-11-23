@@ -117,7 +117,7 @@ margin, while cores−1 and j14 are indistinguishable; with
 (n=7, 7/7). Fewer decoders help when writers burn encode CPU and hurt
 when they are I/O-blocked — that is the row's own rationale, restated
 on a smaller chip. No default change: one number has to serve both
-modes and the spread is ~4%. Beware sequential A/B here — `bench.sh`
+modes and the spread is ~4%. Beware sequential A/B here — `bench.py`
 runs its variants sequentially, and an earlier sequential sweep's
 "j14 recovers" (−0.26 s vs cores−1) did not survive interleaving.
 
@@ -667,14 +667,14 @@ XAEA_STATS=1 ./target/release/xaea extract fixtures/Xcode_27.3_beta_2.aea -o /tm
 ./scripts/verify.sh <new-tree> <oracle-tree>   # correctness gate, always
 ```
 
-For A/B timing use `scripts/bench.sh`: hyperfine over a real
+For A/B timing use `scripts/bench.py`: hyperfine over a real
 `extract` (wiping the output dir before each run), any number of named
 variants, plus machine/rev header and a mean/σ/min/CPU/peak-RSS/MiB/s
 table. `-d` for dry-run, `-r`/`-w` for runs/warmups, `-h` for the rest:
 
 ```sh
-scripts/bench.sh 'liblzma=--decoder liblzma' 'libcompression=--decoder libcompression'
-scripts/bench.sh -d -r 10 'w4=-w 4' 'w6=-w 6'
+scripts/bench.py fixtures/Xcode_27.3_beta_2.aea 'liblzma=--decoder liblzma' 'libcompression=--decoder libcompression'
+scripts/bench.py -d -r 10 fixtures/Xcode_27.3_beta_2.aea 'w4=-w 4' 'w6=-w 6'
 ```
 
 Warm the cache first (extract once to /dev/null-ish, or just discard the
