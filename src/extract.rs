@@ -374,7 +374,10 @@ fn extract_body(
         segmac_failed.is_empty(),
         "segment MAC failures: {segmac_failed:?}"
     );
-    sink.final_pass(dir_default)?;
+    // A failed send here means a writer already exited with its own error
+    // (e.g. the link pass refusing a traversal), so hold it until the
+    // writers are joined and report theirs first.
+    let tail = sink.final_pass(dir_default);
     let st = sink.into_stats(); // closes writer channels; writers flush and exit
 
     let mut first_err: Option<anyhow::Error> = None;
@@ -410,7 +413,7 @@ fn extract_body(
     }
     match first_err {
         Some(e) => Err(e),
-        None => Ok(st),
+        None => tail.map(|()| st),
     }
 }
 
