@@ -37,14 +37,23 @@ pub fn tmpdir(tag: &str) -> PathBuf {
 /// fresh directory and return that directory; the archive is
 /// `archive.aea` and its manifest `manifest.json`. `None` means skip: the
 /// builder needs python3 with the `cryptography` package, and `cargo test`
-/// must never fail merely for missing tooling.
+/// must never fail merely for missing tooling — unless
+/// `AEA_REQUIRE_SYNTHETIC=1` is set (as in CI), in which case the missing
+/// dependency panics instead, because an untested rejection path must not
+/// look green.
 pub fn build_archive(tag: &str, builder_args: &[&str]) -> Option<PathBuf> {
     let has_crypto = Command::new("python3")
         .args(["-I", "-c", "import cryptography"])
         .output()
         .is_ok_and(|o| o.status.success());
     if !has_crypto {
-        eprintln!("SKIP {tag}: python3 with `cryptography` not available");
+        let msg = "python3 with `cryptography` not available: the synthetic \
+                   AEA builder cannot run, so the synthetic-AEA tests are UNTESTED \
+                   (pip install cryptography to run them)";
+        if std::env::var("AEA_REQUIRE_SYNTHETIC").is_ok_and(|v| v == "1") {
+            panic!("{msg}");
+        }
+        eprintln!("SKIP {tag}: {msg}");
         return None;
     }
     let dir = tmpdir(tag);
@@ -80,4 +89,15 @@ pub fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no check object containing {key}"))
         .get(key)
         .unwrap()
+}
+
+/// Byte offset of the signature field: 12-byte header ("AEA1" + 4 zeros +
+/// the u32 length of the encoded auth section) followed by the whole
+/// encoded auth section (length prefix, key, terminator, values). The
+/// signature sits after that entire section, not after the first auth
+/// value.
+pub fn sig_off(path: &Path) -> usize {
+    let b = fs::read(path).unwrap();
+    let auth_len = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
+    12 + auth_len
 }

@@ -1,6 +1,8 @@
 //! Exit-code contract (issue #25): every reachable failure class must exit
 //! with the code documented in doc/ERROR-CODES.md. These tests assert exit
 //! codes only — never stderr message text, which is not a stable interface.
+//! Where an exit code alone cannot prove the named check ran (the
+//! signature-field flip), the JSON report is also asserted.
 //!
 //! Classes exercised with synthetic inputs: success (0), usage (2),
 //! unreadable input (3), rejected archive (4), verification failure (5),
@@ -10,7 +12,7 @@
 
 mod common;
 
-use common::{build_archive, tmpdir, xaea};
+use common::{build_archive, check, sig_off, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,18 +37,6 @@ fn flip_copy(src: &Path, dst: &Path, off: usize) {
     let mut b = fs::read(src).unwrap();
     b[off] ^= 0x01;
     fs::write(dst, &b).unwrap();
-}
-
-/// Byte offset of the signature field: 12-byte header + first auth blob.
-fn sig_off(aea: &Path) -> usize {
-    let out = xaea()
-        .arg("inspect")
-        .arg(aea)
-        .arg("--json")
-        .output()
-        .unwrap();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    12 + v["auth"][0]["bytes"].as_u64().unwrap() as usize
 }
 
 #[test]
@@ -148,9 +138,26 @@ fn verification_failures_exit_5() {
         5,
         "corrupt signature"
     );
+    // Exit 5 alone does not prove the named check ran — assert the report
+    // names it: the signature field flip must fail the content signature.
+    let out = xaea()
+        .arg("inspect")
+        .arg(&sigflip)
+        .arg("--verify")
+        .arg("--no-checksums")
+        .arg("--json")
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout)
+        .expect("signature-field flip must still print a parseable report");
+    assert_eq!(
+        check(&report, "content_signature_ok"),
+        &Value::Bool(false),
+        "signature-field flip must fail the content signature"
+    );
 
     // Corrupt root MAC field: a compared check, reported false and bailed.
-    // Header(12) + auth + signature(128) + root hash(32) + root salt(32).
+    // Header(12) + auth + signature(128) + ikm(32) + mainsalt(32).
     let macflip = dir.join("macflip.aea");
     flip_copy(&aea, &macflip, off + 128 + 32 + 32 + 5);
     assert_eq!(
