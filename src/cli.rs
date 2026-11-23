@@ -3,6 +3,7 @@
 use crate::extract::Compress;
 use crate::xz::XzDecoder;
 use clap::{Args, Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 /// xaea — fast extractor for Apple Encrypted Archives (Xcode edition)
@@ -21,6 +22,8 @@ pub enum Commands {
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
     #[command(visible_alias = "x")]
     Extract(ExtractArgs),
+    /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
+    Completions(CompletionsArgs),
 }
 
 // Plain comments, not doc comments, on the argument structs: clap would
@@ -103,6 +106,13 @@ pub struct ExtractArgs {
     /// for an Xcode archive on M3 Max, at 2.6× the disk space)
     #[arg(long, overrides_with = "compress")]
     pub no_compress: bool,
+}
+
+#[derive(Args)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    #[arg(value_enum)]
+    pub shell: Shell,
 }
 
 impl ExtractArgs {

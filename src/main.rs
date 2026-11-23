@@ -1,6 +1,7 @@
 mod aa;
 mod cli;
 mod cmd;
+mod completions;
 mod decmpfs;
 mod envelope;
 mod exit;
@@ -21,5 +22,9 @@ fn main() -> ExitCode {
     exit::report(match &cli.cmd {
         Commands::Inspect(args) => cmd::inspect::run(args),
         Commands::Extract(args) => cmd::extract::run(args),
+        Commands::Completions(args) => {
+            completions::print(args.shell);
+            Ok(())
+        }
     })
 }

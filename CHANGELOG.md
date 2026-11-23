@@ -26,6 +26,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `profile` cargo feature (`cargo build --features profile`): prints a
   per-stage timing breakdown (`XAEA_STATS=1`) or a live timeline
   (`XAEA_TL=1`) for performance investigations. No cost when not enabled.
+* `xaea completions <shell>` prints a shell-completion script (bash, zsh,
+  fish, elvish, powershell) generated from the binary's own argument parser.
 * `-` as the archive path of `inspect` or `extract` reads the archive from
   standard input (`curl ... | xaea extract - outdir`). The bytes are
   spooled to a private temporary file first, so every integrity check —
