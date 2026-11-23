@@ -8,16 +8,16 @@ It is a standard Rust project:
 
 - `cargo build` to build
 - local verifications:
-  - `cargo fmt --all --check
+  - `cargo fmt --all --check`
   - `cargo clippy --all-targets --locked -- -D warnings`
   - `cargo test --locked`
 
-There's a convention of using a `fixtures` directory to contain .aea files from actual Xcode distributed archives, set the `AEA_FIXTURE` env var to a `.aea` file path if you need to exercise those as well (but they make tests take much longer)
+There's a convention of using a `fixtures` directory to contain .aea files from actual Xcode distributed archives. You can look there if you need to exercise them in your work. Set the `AEA_FIXTURE` env var to a `.aea` file if you need to use it during `cargo test` as well (but they make tests take much longer), adding `--ignored` to the `cargo test` invocation.
 
 ## Branching
 
 - Do all work in a dedicated branch, in isolated git worktrees. Start new work from the upstream `main` unless the work is explicitly being derived from another work-in-progress branch.
-- Never merge `main` into a work branch. If you need to fix merge conflicts, do it by rebasing on top of the upstream `main`.
+- Never merge `main` into your work branch. If you need to fix merge conflicts, do it by rebasing on top of the upstream `main`.
 
 ## Opening pull requests
 
@@ -39,3 +39,8 @@ Other AI agents may add comments on PRs, feel free to address them autonomously.
 ## Benchmarking discipline
 
 - Since the tool is performance-sensitive, if you're going to run any benchmark to compare code, make sure to do it when there isn't other work being done on the machine.
+
+## Documentation
+
+- Don't add additional info to the README, although feel free to correct anything there if relevant to your changes.
+- Add a short, 1-2 sentence line to the CHANGELOG.md file if the changes are user-facing. It's ok for the changelog info to be technical in nature, but low-level implementation details needn't be included.
