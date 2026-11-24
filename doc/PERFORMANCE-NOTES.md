@@ -265,11 +265,19 @@ The zero-fill costs nothing measurable (71.6 vs 71.8 ms/segment). Decoded
 output is byte-identical to liblzma's on all sampled segments, and all 624
 segments (9.75 GiB) of the fixture pass their SHA-256 checks.
 
-What is **not** measured: a full extract with writes. The attempt was
-abandoned when the machine stalled. Per "The one fact that explains the
-architecture", a full extract is writer-bound, so expect the CPU saving to
-show up as lower CPU use rather than shorter wall time, as with
-libcompression.
+Full extract with writes (compression on, the default), `bench.py`, 1 warmup
++ 3 runs per variant, not interleaved, same busy machine:
+
+| | liblzma | lzma-turbo | Δ |
+|---|---|---|---|
+| wall | 12.96 ± 0.15 s | 12.59 ± 0.17 s | −2.9% |
+| CPU | 129.3 s | 120.1 s | −7% |
+| peak RSS | 5.81 GiB | 5.90 GiB | +1.6% |
+
+As "The one fact that explains the architecture" predicts, a full extract is
+writer-bound, so the ~20% decode saving shrinks to ~3% of wall time (about
+2 standard errors of the difference at n=3, so suggestive, not established)
+and ~7% of CPU.
 
 Costs of adoption: the crate declares `rust-version = 1.97.1` (xaea's MSRV
 moved from 1.88), and it is Apache-2.0 where xaea is MIT.
