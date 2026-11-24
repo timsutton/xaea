@@ -9,9 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * `xaea cat <archive> <member>`: write one regular file from an archive to
   stdout (e.g. `xaea cat Xcode.aea Xcode-beta.app/Contents/Info.plist | plutil -p -`),
-  without extracting the tree. Directories and symlinks are refused with a
-  clear error; verification is on by default and the output is streamed, so a
-  non-zero exit means anything already written is untrustworthy.
+  without extracting the tree.
 
 ## 0.2.0 - 2026-11-22
 
