@@ -107,7 +107,7 @@ Options on `extract`:
 | `--readahead` | decoded segments (~16 MiB each) buffered ahead of the parser (default: 1/8 of RAM worth, between decoders+4 and 160 — 128 on 16 GB, 160 from 32 GB; lower it to cut peak memory, e.g. `--readahead 19` ≈ 3.2 GiB peak vs ≈ 5 GiB) |
 | `--dry-run` | decode + parse everything, write nothing |
 | `--prealloc` | pre-reserve file extents (`F_PREALLOCATE`/`posix_fallocate`); neutral-to-worse on APFS, off by default |
-| `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default) or `libcompression` (Apple's OS-provided library, macOS only). Also accepted by `inspect`. |
+| `--decoder` | LZMA implementation: `liblzma` (vendored xz-utils, default), `libcompression` (Apple's OS-provided library, macOS only) or `lzma-turbo` (pure Rust port of 7-Zip's decoder). Also accepted by `inspect`. |
 | `--json` | machine-readable summary |
 
 ## Shell completions

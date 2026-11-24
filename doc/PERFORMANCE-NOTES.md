@@ -234,6 +234,46 @@ Two implementation details matter:
 - **Per-thread scratch buffer** (`compression_decode_scratch_buffer_size`)
   instead of letting libcompression allocate one per call.
 
+## Alternate LZMA decoder: lzma-turbo (`--decoder lzma-turbo`)
+
+[lzma-turbo](https://crates.io/crates/lzma-turbo) 0.12.1 is a pure-Rust port
+of 7-Zip's `LzmaDec.c` / `Lzma2Dec.c` with 7-Zip's hand-written aarch64 /
+x86-64 asm decode loop. It has no one-shot slice API, so each segment goes
+through `XzReader` over the in-memory segment: LZMA2 decodes into a
+block-sized dictionary window (the crate clamps it to the block's declared
+size) and is copied into the segment buffer, which is zero-filled first
+because `Read` needs initialised memory. Acceptance matches the liblzma
+path: exactly `orig` bytes, xz check skipped when SHA-256 follows, bytes
+after the stream ignored. Built with `default-features = false` (no encoder,
+no AWS-LC C dependency).
+
+Measured 2026-11-24, M3 Max (16c), Xcode 27.3 beta 2 fixture, liblzma 5.8.4
+vs lzma-turbo 0.12.1. **The machine was not idle** (load average 7–26 from
+other work, so absolute times are inflated); runs were interleaved and CPU
+time is stable to ±0.5%, but treat wall times as indicative and re-measure
+on an idle machine before relying on them.
+
+| measure | liblzma | lzma-turbo | Δ |
+|---|---|---|---|
+| single thread, 23 real 16 MiB segments, best-of-7 | 178 MiB/s | 223 MiB/s | −20% time |
+| `inspect --verify` checksum pass (decode + SHA-256, all cores), 4 interleaved rounds | 5.94–6.09 s | 4.81–4.86 s | −20% |
+| same, user CPU | 69.1 s | 56.0 s | −19% |
+| `bench.py -d` (`--dry-run`), 6 runs, not interleaved | 5.38 ± 0.73 s | 4.32 ± 0.12 s | −20% |
+
+(`libcompression` measured 66.2 s CPU / 5.10 s dry-run in the same sessions.)
+The zero-fill costs nothing measurable (71.6 vs 71.8 ms/segment). Decoded
+output is byte-identical to liblzma's on all sampled segments, and all 624
+segments (9.75 GiB) of the fixture pass their SHA-256 checks.
+
+What is **not** measured: a full extract with writes. The attempt was
+abandoned when the machine stalled. Per "The one fact that explains the
+architecture", a full extract is writer-bound, so expect the CPU saving to
+show up as lower CPU use rather than shorter wall time, as with
+libcompression.
+
+Costs of adoption: the crate declares `rust-version = 1.97.1` (xaea's MSRV
+moved from 1.88), and it is Apache-2.0 where xaea is MIT.
+
 ## What verification costs (and how it hides)
 
 Verify-by-default (batch `0820ee1`) initially regressed 8.4 s → 13.0 s.

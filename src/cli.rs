@@ -45,9 +45,10 @@ pub struct InspectArgs {
     /// Skip the full checksum pass when used with --verify
     #[arg(long)]
     pub no_checksums: bool,
-    /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
+    /// LZMA decoder: `liblzma` (vendored xz-utils, the default),
     /// `libcompression` (Apple's OS-provided library; macOS only; the
-    /// two measure the same on full extracts)
+    /// two measure the same on full extracts) or `lzma-turbo` (pure Rust,
+    /// ported from 7-Zip's decoder)
     #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
     pub decoder: XzDecoder,
 }
@@ -93,9 +94,10 @@ pub struct ExtractArgs {
     /// volumes; measured neutral-to-worse on APFS/NVMe, so off by default)
     #[arg(long)]
     pub prealloc: bool,
-    /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
+    /// LZMA decoder: `liblzma` (vendored xz-utils, the default),
     /// `libcompression` (Apple's OS-provided library; macOS only; the
-    /// two measure the same on full extracts)
+    /// two measure the same on full extracts) or `lzma-turbo` (pure Rust,
+    /// ported from 7-Zip's decoder)
     #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
     pub decoder: XzDecoder,
     /// Store files with transparent APFS compression, as Apple's
@@ -127,8 +129,9 @@ pub struct CatArgs {
     /// Decoder threads (default: cores-1, min 2)
     #[arg(short, long)]
     pub jobs: Option<usize>,
-    /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
-    /// `libcompression` (Apple's OS-provided library; macOS only)
+    /// LZMA decoder: `liblzma` (vendored xz-utils, the default),
+    /// `libcompression` (Apple's OS-provided library; macOS only) or
+    /// `lzma-turbo` (pure Rust, ported from 7-Zip's decoder)
     #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
     pub decoder: XzDecoder,
 }
