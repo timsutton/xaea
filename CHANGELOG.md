@@ -15,6 +15,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   than liblzma on Apple Silicon (~3% shorter full extract, which is
   writer-bound). `--decoder liblzma` selects the previous default. Building now
   requires Rust 1.97.1.
+* `xaea version` — prints the version (`xaea version --json` for
+  machine-readable output).
+* `--help` for every subcommand now ends with copy-pasteable examples and a
+  docs pointer.
+* Bare `xaea` prints concise help and exits 0 (it used to be an error).
+* `--json` failures now print a machine-readable error object on stderr
+  (`{"error":{"code","exit_code","message"}}`) instead of prose; stdout stays
+  empty.
+
+### Changed
+
+* `inspect --verify` prints its checks as a human-readable `✓/✗` report
+  (was a raw JSON blob per check). The `--json` report is unchanged.
 
 ## 0.2.0 - 2026-11-22
 
