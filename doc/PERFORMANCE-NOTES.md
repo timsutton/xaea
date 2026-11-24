@@ -742,8 +742,15 @@ scripts/bench.py -d -r 10 fixtures/Xcode_27.3_beta_2.aea 'w4=-w 4' 'w6=-w 6'
 
 Warm the cache first (extract once to /dev/null-ish, or just discard the
 first run). The CI `perf` workflow (hyperfine, warmup run, throughput =
-payload bytes / mean wall) tracks the same numbers on every PR; a budget
-gate (fail the run above N seconds) is planned there.
+payload bytes / mean wall) tracks the same numbers on every PR and on
+pushes to main. Each main run appends its per-benchmark means to a
+`perf-history` Actions cache; the PR gate fails when `extract --dry-run`
+exceeds 1.35x the mean of the last five main runs on the same CPU model
+(the margin covers runner noise: in a backtest over historical M1-class
+runs the worst single-run ratio against a five-run mean was 1.25, flagging
+0 of 34 gate decisions). Until three same-CPU baselines exist it falls
+back to the `PERF_MAX_SECONDS` repo variable, and a dispatch
+`max_seconds` input forces a fixed limit.
 
 Platform caveat: all of the above was tuned on macOS/APFS by design. On
 Linux the code builds and runs cleanly, but treat the defaults as
