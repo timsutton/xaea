@@ -373,9 +373,10 @@ the raw `open(O_CREAT)`/`close` microbenchmark referenced below.
 
 ### What the profile showed (Xcode 27.3 b2, M3 Max, full extract ≈ 9 s)
 
-- CPU: ~70 s user (LZMA 91%, ~8% of that `memmove` out of liblzma's
-  dictionary; SHA-256 ≈ 5 s; segment MACs ≈ 1 s) + ~23 s sys, almost all
-  writers. A dry run is the ~5 s decode floor (≈14 busy cores).
+- CPU: ~70 s user (LZMA 91%, ~8% of that `memmove` — but see "Decoder
+  copy cost (#45)" below: it is LZ77 match expansion, not the
+  dictionary→output flush; SHA-256 ≈ 5 s; segment MACs ≈ 1 s) + ~23 s sys,
+  almost all writers. A dry run is the ~5 s decode floor (≈14 busy cores).
 - Writer kernel time: `open` 51%, `pwrite` 22%, `mkdir` 12%, `close`
   9%, symlink 3%. A single writer needs ~14.8 s of sys; 8 writers burn
   ~26.8 s for no extra throughput past ~4 writers — contention, not work.
@@ -432,8 +433,42 @@ vs 6.65–6.67 s (σ ≈ 0.05–0.1 s).
 ### Not yet tried
 
 Parallelizing the final symlink pass (0.6–0.7 s serial tail; the
-traversal check can run in the parser, creation could fan out), and
-avoiding liblzma's dictionary→output copy (~8% of decode CPU).
+traversal check can run in the parser, creation could fan out).
+
+### Decoder copy cost (#45)
+
+Issue #45 read the ~8% `memmove` above as liblzma copying decoded bytes
+from its internal dictionary into the caller's output buffer, and asked
+whether a patch could alias the dictionary onto the output buffer to skip
+that copy. Profiling a single segment refutes the attribution.
+
+Method: a 16 MiB slice of the LLDB binary, `xz -6 --check=crc64` (4.67 MiB
+in), decoded one-shot into an exact-size buffer by a `sample`-able harness
+(`decode_prof`, release + debug symbols), 1 ms sampling, both decoders.
+The call tree resolves entirely inside the statically-linked binary, so the
+leaf addresses are unambiguous:
+
+| leaf | samples | reached from | what it is |
+|---|---|---|---|
+| `_platform_memmove` @ `…f2c` | 565 | `lzma_decode` → `dict_repeat` | LZ77 match expansion (`SEQ_COPY`) |
+| `DYLD-STUB$$memcpy` | 29 | `lzma_decode` → `dict_repeat` | same, small-match path |
+| `_platform_memmove` @ `…db8` | 9 | `lz_decode` → `decode_buffer` | the dictionary→output flush |
+
+Of 6065 samples, the dictionary→output flush — the exact copy #45 proposed
+to remove — is **9 samples (≈ 0.15%)**, not 8%. The ~8% is `dict_repeat`
+copying match bytes within the dictionary window, which is inherent to
+LZ77: every decoder must materialise matches into the window. Aliasing
+`dict.buf` onto the output buffer would eliminate only the 9-sample flush,
+so the patch is not worth it.
+
+Apple's `libcompression` shows **zero** `_platform_memmove` samples — its
+`lzma1_chunk_decode` inlines and vectorises the match copies instead of
+calling out to the platform routine — and is ~5% faster decode-only
+(142.8 ms vs 150.2 ms best-of on the slice). That matches PR #60: the gain
+is real but confined to the decode floor, and full extract is writer-bound,
+so end-to-end wall time is indistinguishable. The decode-only win is
+already available via `--decoder libcompression`; no liblzma patch is
+warranted.
 
 ## Compressed extraction (the macOS default)
 
