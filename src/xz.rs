@@ -13,6 +13,8 @@ pub enum XzDecoder {
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
     /// only; full-extract speed is indistinguishable from liblzma
     Libcompression,
+    /// xz-native: a pure-Rust port of liblzma 5.8.4 (no C)
+    XzNative,
 }
 
 impl XzDecoder {
@@ -20,6 +22,7 @@ impl XzDecoder {
         match self {
             XzDecoder::Liblzma => "liblzma",
             XzDecoder::Libcompression => "libcompression",
+            XzDecoder::XzNative => "xz-native",
         }
     }
 
@@ -74,6 +77,7 @@ pub unsafe fn segbuf_filled(
 pub fn decode(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
     match dec {
         XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),
+        XzDecoder::XzNative => xz_native_decode(data, orig, sha256_follows),
         #[cfg(target_os = "macos")]
         XzDecoder::Libcompression => libcompression::decode(data, orig),
         #[cfg(not(target_os = "macos"))]
@@ -132,6 +136,36 @@ fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf
     };
     // SAFETY: `fill` returns Ok only when liblzma wrote exactly `orig` bytes.
     unsafe { segbuf_filled(orig, fill) }
+}
+
+/// One-shot xz-native decode (`decompress_with_options_to_slice`, the
+/// counterpart of `lzma_stream_buffer_decode`) into the exact-size segment
+/// buffer. Same acceptance as [`liblzma_decode`]: one .xz stream, decoded
+/// size exactly `orig`, bytes after the end of the stream ignored
+/// (`concatenated(false)`).
+fn xz_native_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf> {
+    let opts = xz_native::DecoderOptions::new()
+        .concatenated(false)
+        .ignore_check(ignore_check);
+    // xz-native takes a `&mut [u8]`, so unlike the raw-pointer decoders the
+    // buffer must be initialized first (`Arc::new_zeroed_slice` would avoid
+    // the memset but is stable only since 1.92).
+    let mut buf = Arc::<[u8]>::new_uninit_slice(orig);
+    let ptr = Arc::get_mut(&mut buf)
+        .expect("freshly allocated Arc is unique")
+        .as_mut_ptr()
+        .cast::<u8>();
+    // SAFETY: `ptr` is valid for `orig` bytes; zeroing initializes them, and
+    // the buffer is uniquely borrowed for as long as `out` lives.
+    let out = unsafe {
+        ptr.write_bytes(0, orig);
+        std::slice::from_raw_parts_mut(ptr, orig)
+    };
+    let n = xz_native::decompress_with_options_to_slice(data, opts, out)
+        .map_err(|e| anyhow::anyhow!("xz decode: {e}"))?;
+    ensure!(n == orig, "xz decoded size mismatch ({n} vs {orig})");
+    // SAFETY: zero-initialized above, then overwritten by the decoder.
+    Ok(unsafe { buf.assume_init() })
 }
 
 #[cfg(target_os = "macos")]
@@ -207,6 +241,33 @@ mod tests {
             .read_to_end(&mut v)
             .unwrap();
         v
+    }
+
+    #[test]
+    fn xz_native_one_shot_decode() {
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let n = data.len();
+        let enc = xz(&data);
+        let dec = |b: &[u8], orig, ignore| decode(b, orig, XzDecoder::XzNative, ignore);
+        for ignore in [false, true] {
+            assert_eq!(&*dec(&enc, n, ignore).unwrap(), &data[..]);
+        }
+        assert!(dec(&enc, n - 1, true).is_err(), "over-long stream");
+        assert!(dec(&enc, n + 1, true).is_err(), "short stream");
+        assert!(dec(&enc[..enc.len() / 2], n, true).is_err(), "truncated");
+        // Trailing bytes after the stream are ignored, like liblzma.
+        let mut trailing = enc.clone();
+        trailing.extend_from_slice(b"garbage after the stream");
+        assert_eq!(&*dec(&trailing, n, true).unwrap(), &data[..]);
+
+        // Flip a bit of the stored CRC64: enforced unless skipped.
+        // SAFETY: `data` is valid for `data.len()` bytes.
+        let crc = unsafe { liblzma_sys::lzma_crc64(data.as_ptr(), data.len(), 0) }.to_le_bytes();
+        let at = enc.windows(8).position(|w| w == crc).unwrap();
+        let mut bad = enc.clone();
+        bad[at] ^= 1;
+        assert!(dec(&bad, n, false).is_err(), "check enforced");
+        assert_eq!(&*dec(&bad, n, true).unwrap(), &data[..], "check skipped");
     }
 
     #[test]

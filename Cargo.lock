@@ -1091,7 +1091,14 @@ dependencies = [
  "signature",
  "tempfile",
  "x509-parser",
+ "xz-native",
 ]
+
+[[package]]
+name = "xz-native"
+version = "1.1.0+xz.5.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc8237bd71ca68c6fd1c7778fe7c4ef2ee774f44b64e2209be8c763fa2037b93"
 
 [[package]]
 name = "zeroize"

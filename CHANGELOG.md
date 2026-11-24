@@ -10,6 +10,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `xaea cat <archive> <member>`: write one regular file from an archive to
   stdout (e.g. `xaea cat Xcode.aea Xcode-beta.app/Contents/Info.plist | plutil -p -`),
   without extracting the tree.
+* `--decoder xz-native`: decode segments with the pure-Rust xz-native crate (a
+  port of liblzma 5.8.4) instead of the vendored C liblzma. Raises the minimum
+  supported Rust version to 1.89.
 
 ## 0.2.0 - 2026-11-22
 

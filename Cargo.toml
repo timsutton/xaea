@@ -5,7 +5,7 @@ edition = "2024"
 # The code uses let-chains (1.88), and the locked sha2 0.11 and time 0.3
 # declare 1.88 too. (The RustCrypto security floor, rsa 0.10 /
 # crypto-bigint >=0.7.6 for RUSTSEC-2023-0071 / RUSTSEC-2026-0387, is 1.87.)
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition"
 license = "MIT"
 
@@ -29,6 +29,9 @@ libc = "0.2"
 # lzma_stream_buffer_decode directly. From the liblzma crate family, the
 # maintained successor of xz2/lzma-sys (whose xz 5.2.5 decoded ~23% slower).
 liblzma-sys = { version = "0.4", features = ["static"] }
+# Pure-Rust xz (a port of liblzma 5.8.4); selectable with `--decoder xz-native`.
+# Its MSRV is 1.89, which is why rust-version moved up from 1.88.
+xz-native = "1"
 signature = "3"
 ecdsa = "0.17"
 # Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;
