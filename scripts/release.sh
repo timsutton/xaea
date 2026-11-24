@@ -4,8 +4,9 @@
 # verify the macOS signatures on the shipped archives.
 #
 # Environment:
-#   RELEASE_SNAPSHOT   "true" for a dry run (skip the tag check, pass
-#                      --snapshot to GoReleaser and skip signing/notarization)
+#   RELEASE_SNAPSHOT   "true" for a dry run (skip the tag check, the signature
+#                      check and signing/notarization, and pass --snapshot to
+#                      GoReleaser)
 #   GITHUB_REF_TYPE    must be "tag" for a real release (workflow-provided)
 #   GITHUB_REF_NAME    tag name, e.g. vX.Y.Z (real releases only)
 #   RUNNER_TEMP        scratch dir for the release notes (defaults to a temp dir)
@@ -53,6 +54,8 @@ goreleaser "${args[@]}"
 
 # Check what actually shipped in the darwin archives: Developer ID-signed with
 # the hardened runtime. Notarization can't be checked offline; GoReleaser waits
-# for Apple's verdict and fails the step on rejection. The script is a no-op
-# when signing is off (no MACOS_SIGN_P12), i.e. snapshots.
-scripts/verify-macos-signature.sh dist
+# for Apple's verdict and fails the step on rejection. Snapshots ship unsigned
+# binaries, so there is nothing to check — skipping avoids a false failure.
+if [ "$snapshot" != "true" ]; then
+  scripts/verify-macos-signature.sh dist
+fi
