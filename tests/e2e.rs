@@ -507,6 +507,46 @@ fn evil_symlink_archives_are_refused_and_contained() {
     fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn lzma_turbo_decoder_matches_liblzma() {
+    let Some((dir, _)) = synthetic("lzma-turbo") else {
+        return;
+    };
+    let v = inspect(&dir, &["--verify", "--json", "--decoder", "lzma-turbo"]);
+    assert_eq!(check(&v, "checksums_ok"), 7);
+    assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
+
+    let mut trees = Vec::new();
+    for dec in ["liblzma", "lzma-turbo"] {
+        let out = dir.join(format!("out-{dec}"));
+        let run = xaea()
+            .arg("extract")
+            .arg(dir.join("archive.aea"))
+            .arg(&out)
+            .args(["--json", "--decoder", dec])
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{dec}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let stats: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert_eq!(stats["decoder"], dec);
+        let mut kinds = HashMap::new();
+        walk(&out, "", &mut kinds);
+        let mut contents: Vec<_> = kinds
+            .iter()
+            .filter(|(_, k)| **k == 'F')
+            .map(|(p, _)| (p.clone(), fs::read(out.join(p)).unwrap()))
+            .collect();
+        contents.sort();
+        trees.push((kinds, contents));
+    }
+    assert_eq!(trees[0], trees[1], "both decoders produce the same tree");
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn libcompression_decoder_matches_liblzma() {

@@ -13,6 +13,8 @@ pub enum XzDecoder {
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
     /// only; full-extract speed is indistinguishable from liblzma
     Libcompression,
+    /// lzma-turbo (pure Rust, 7-Zip port with an assembly decode loop)
+    LzmaTurbo,
 }
 
 impl XzDecoder {
@@ -20,6 +22,7 @@ impl XzDecoder {
         match self {
             XzDecoder::Liblzma => "liblzma",
             XzDecoder::Libcompression => "libcompression",
+            XzDecoder::LzmaTurbo => "lzma-turbo",
         }
     }
 
@@ -67,10 +70,11 @@ pub unsafe fn segbuf_filled(
 ///
 /// `sha256_follows`: the caller will SHA-256 the decoded bytes against the
 /// segment checksum, which makes the .xz stream's own integrity check
-/// (e.g. CRC64 over the same decoded bytes) redundant, so liblzma skips it
-/// (`LZMA_IGNORE_CHECK`; ~9% of decode time for CRC64 streams). Apple's own
-/// segments declare check type "none", so for them this flag changes nothing.
-/// Without verification the xz check stays on, if the stream has one.
+/// (e.g. CRC64 over the same decoded bytes) redundant, so the decoders skip
+/// it (`LZMA_IGNORE_CHECK` / `verify_checks = false`; ~9% of decode time for
+/// CRC64 streams). Apple's own segments declare check type "none", so for
+/// them this flag changes nothing. Without verification the xz check stays
+/// on, if the stream has one.
 pub fn decode(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
     match dec {
         XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),
@@ -78,6 +82,7 @@ pub fn decode(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) ->
         XzDecoder::Libcompression => libcompression::decode(data, orig),
         #[cfg(not(target_os = "macos"))]
         XzDecoder::Libcompression => bail!("libcompression is only available on macOS"),
+        XzDecoder::LzmaTurbo => lzma_turbo_decode(data, orig, sha256_follows),
     }
 }
 
@@ -131,6 +136,45 @@ fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf
         Ok(())
     };
     // SAFETY: `fill` returns Ok only when liblzma wrote exactly `orig` bytes.
+    unsafe { segbuf_filled(orig, fill) }
+}
+
+/// One-shot lzma-turbo decode into the exact-size segment buffer. lzma-turbo
+/// is a `Read` adapter rather than a one-shot API, so the same safety contract
+/// is kept by zero-filling the buffer (u8 may not be assumed initialized) and
+/// reading exactly `orig` bytes in place. Same acceptance as the liblzma
+/// path: one .xz stream, decoded size exactly `orig`, anything past that an
+/// error.
+fn lzma_turbo_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf> {
+    use lzma_turbo::xz::XzReader;
+    use std::io::Read;
+    let fill = |dst: *mut u8| -> Result<()> {
+        // SAFETY: `orig` is writable bytes from the freshly allocated
+        // buffer; zero-filling makes the `&mut [u8]` handed to the reader
+        // fully initialized.
+        let buf = unsafe {
+            std::ptr::write_bytes(dst, 0, orig);
+            std::slice::from_raw_parts_mut(dst, orig)
+        };
+        let mut opts = lzma_turbo::xz::XzOptions::default();
+        opts.verify_checks = !ignore_check;
+        // One stream per segment; anything after the first is a bug, not
+        // something to silently skip.
+        let mut r = XzReader::with_options(std::io::Cursor::new(data), opts).single_stream();
+        r.read_exact(buf)
+            .map_err(|e| anyhow::anyhow!("xz decode (lzma-turbo): {e}"))?;
+        // Over-long stream: must not have produced anything extra.
+        let mut extra = [0u8; 1];
+        let n = r
+            .read(&mut extra)
+            .map_err(|e| anyhow::anyhow!("xz decode (lzma-turbo): {e}"))?;
+        ensure!(
+            n == 0,
+            "xz decoded size mismatch or over-long stream ({orig} vs >{orig})"
+        );
+        Ok(())
+    };
+    // SAFETY: `fill` returns Ok only when the reader filled every byte.
     unsafe { segbuf_filled(orig, fill) }
 }
 
@@ -211,10 +255,19 @@ mod tests {
 
     #[test]
     fn liblzma_one_shot_decode() {
+        one_shot_decode(XzDecoder::Liblzma);
+    }
+
+    #[test]
+    fn lzma_turbo_one_shot_decode() {
+        one_shot_decode(XzDecoder::LzmaTurbo);
+    }
+
+    fn one_shot_decode(decoder: XzDecoder) {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
         let n = data.len();
         let enc = xz(&data);
-        let dec = |b: &[u8], orig, ignore| decode(b, orig, XzDecoder::Liblzma, ignore);
+        let dec = |b: &[u8], orig, ignore| decode(b, orig, decoder, ignore);
         for ignore in [false, true] {
             assert_eq!(&*dec(&enc, n, ignore).unwrap(), &data[..]);
         }

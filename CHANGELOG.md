@@ -10,6 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `xaea cat <archive> <member>`: write one regular file from an archive to
   stdout (e.g. `xaea cat Xcode.aea Xcode-beta.app/Contents/Info.plist | plutil -p -`),
   without extracting the tree.
+* New LZMA decoder backend `lzma-turbo` (`--decoder lzma-turbo`): a pure-Rust
+  port of 7-Zip's decoder with an assembly decode loop. Selected per
+  invocation alongside `liblzma` and `libcompression`; default unchanged.
+
+### Changed
+
+* MSRV bumped to 1.97.1 (lzma-turbo's declared floor).
 
 ## 0.2.0 - 2026-11-22
 

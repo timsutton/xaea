@@ -2,10 +2,11 @@
 name = "xaea"
 version = "0.2.0"
 edition = "2024"
-# The code uses let-chains (1.88), and the locked sha2 0.11 and time 0.3
-# declare 1.88 too. (The RustCrypto security floor, rsa 0.10 /
-# crypto-bigint >=0.7.6 for RUSTSEC-2023-0071 / RUSTSEC-2026-0387, is 1.87.)
-rust-version = "1.88"
+# lzma-turbo (declared floor 1.97.1) is the highest of the locked dependency
+# floors; the RustCrypto security floor (rsa 0.10 / crypto-bigint >=0.7.6 for
+# RUSTSEC-2023-0071 / RUSTSEC-2026-0387) and the locked sha2 0.11 are both
+# lower (1.88 / 1.87).
+rust-version = "1.97.1"
 description = "Fast extractor for Apple Encrypted Archives (AEA) — Xcode edition"
 license = "MIT"
 
@@ -38,6 +39,15 @@ rsa = { version = "0.10", default-features = false, features = [
 ] }
 serde_json = "1"
 tempfile = "3"
+# Pure-Rust LZMA2/.xz decoder (7-Zip port, asm decode loop on aarch64/x86_64).
+# No default features: no encoder, no AWS-LC C build — `native-crypto` gives
+# SHA-256 checks from the same sha2 0.11 we already lock.
+lzma-turbo = { version = "0.11", default-features = false, features = [
+    "asm",
+    "std",
+    "xz",
+    "native-crypto",
+] }
 
 [features]
 # Pipeline timing probes (XAEA_STATS breakdown, XAEA_TL timeline, XAEA_DQ/XAEA_WQ
