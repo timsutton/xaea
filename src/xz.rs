@@ -7,12 +7,15 @@ use std::sync::Arc;
 /// Which LZMA (.xz) implementation decodes segments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum XzDecoder {
-    /// liblzma (xz-utils), statically linked into xaea — portable default
-    #[default]
+    /// liblzma (xz-utils), statically linked into xaea
     Liblzma,
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
     /// only; full-extract speed is indistinguishable from liblzma
     Libcompression,
+    /// lzma-turbo: Rust port of 7-Zip's LZMA decoder (asm loop on
+    /// aarch64/x86-64) — portable default
+    #[default]
+    LzmaTurbo,
 }
 
 impl XzDecoder {
@@ -20,6 +23,7 @@ impl XzDecoder {
         match self {
             XzDecoder::Liblzma => "liblzma",
             XzDecoder::Libcompression => "libcompression",
+            XzDecoder::LzmaTurbo => "lzma-turbo",
         }
     }
 
@@ -67,13 +71,15 @@ pub unsafe fn segbuf_filled(
 ///
 /// `sha256_follows`: the caller will SHA-256 the decoded bytes against the
 /// segment checksum, which makes the .xz stream's own integrity check
-/// (e.g. CRC64 over the same decoded bytes) redundant, so liblzma skips it
-/// (`LZMA_IGNORE_CHECK`; ~9% of decode time for CRC64 streams). Apple's own
+/// (e.g. CRC64 over the same decoded bytes) redundant, so lzma-turbo and
+/// liblzma skip it (for liblzma, `LZMA_IGNORE_CHECK`; ~9% of decode time for
+/// CRC64 streams). Apple's own
 /// segments declare check type "none", so for them this flag changes nothing.
 /// Without verification the xz check stays on, if the stream has one.
 pub fn decode(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
     match dec {
         XzDecoder::Liblzma => liblzma_decode(data, orig, sha256_follows),
+        XzDecoder::LzmaTurbo => lzma_turbo_decode(data, orig, sha256_follows),
         #[cfg(target_os = "macos")]
         XzDecoder::Libcompression => libcompression::decode(data, orig),
         #[cfg(not(target_os = "macos"))]
@@ -131,6 +137,54 @@ fn liblzma_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf
         Ok(())
     };
     // SAFETY: `fill` returns Ok only when liblzma wrote exactly `orig` bytes.
+    unsafe { segbuf_filled(orig, fill) }
+}
+
+fn is_trailing_garbage(e: &std::io::Error) -> bool {
+    use lzma_turbo::xz::{XzError, XzErrorKind};
+    e.get_ref()
+        .and_then(|i| i.downcast_ref::<XzError>())
+        .is_some_and(|x| x.kind == XzErrorKind::TrailingGarbage)
+}
+
+/// lzma-turbo decode through its `XzReader` (the crate has no one-shot
+/// slice API; its slice-oriented readers need a seekable source or run
+/// threads of their own, and xaea already parallelizes across segments).
+/// Same acceptance as the liblzma path: exactly `orig` bytes out, the check
+/// skipped when the caller's SHA-256 follows. The reader's output goes
+/// through its own dictionary window (clamped to the block's declared size)
+/// and is copied into `dst`; `dst` is zeroed first because `Read` takes an
+/// initialized `&mut [u8]`.
+fn lzma_turbo_decode(data: &[u8], orig: usize, ignore_check: bool) -> Result<SegBuf> {
+    use lzma_turbo::xz::{XzOptions, XzReader};
+    use std::io::Read;
+    let fill = |dst: *mut u8| -> Result<()> {
+        // SAFETY: `dst` points to `orig` writable bytes; zeroing them makes
+        // the slice fully initialized before it is created.
+        let out = unsafe {
+            std::ptr::write_bytes(dst, 0, orig);
+            std::slice::from_raw_parts_mut(dst, orig)
+        };
+        let opts = XzOptions::default()
+            .with_checks(!ignore_check)
+            .with_concatenated(false);
+        let mut rd = XzReader::with_options(data, opts);
+        rd.read_exact(out)
+            .map_err(|e| anyhow::anyhow!("xz decode: {e}"))?;
+        // The stream must end exactly here (longer → error). Bytes after it
+        // are ignored, as with liblzma: with `concatenated(false)` the reader
+        // reports them as `TrailingGarbage`, but only once the stream's
+        // footer and index have been validated, so that error means success.
+        let mut probe = [0u8; 1];
+        match rd.read(&mut probe) {
+            Ok(0) => {}
+            Ok(_) => bail!("xz decoded size mismatch (output exceeds {orig})"),
+            Err(e) if is_trailing_garbage(&e) => {}
+            Err(e) => bail!("xz decode: {e}"),
+        }
+        Ok(())
+    };
+    // SAFETY: `fill` returns Ok only after writing all `orig` bytes.
     unsafe { segbuf_filled(orig, fill) }
 }
 
@@ -235,5 +289,59 @@ mod tests {
         bad[at] ^= 1;
         assert!(dec(&bad, n, false).is_err(), "check enforced");
         assert_eq!(&*dec(&bad, n, true).unwrap(), &data[..], "check skipped");
+    }
+
+    #[test]
+    fn lzma_turbo_one_shot_decode() {
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let n = data.len();
+        let enc = xz(&data);
+        let dec = |b: &[u8], orig, ignore| decode(b, orig, XzDecoder::LzmaTurbo, ignore);
+        for ignore in [false, true] {
+            assert_eq!(&*dec(&enc, n, ignore).unwrap(), &data[..]);
+        }
+        assert!(dec(&enc, n - 1, true).is_err(), "over-long stream");
+        assert!(dec(&enc, n + 1, true).is_err(), "short stream");
+        assert!(dec(&enc[..enc.len() / 2], n, true).is_err(), "truncated");
+
+        // Bytes after the end of the stream are ignored, as with liblzma.
+        let mut trailing = enc.clone();
+        trailing.extend_from_slice(&[0xAB; 37]);
+        assert_eq!(&*dec(&trailing, n, true).unwrap(), &data[..], "trailing");
+        assert_eq!(&*dec(&trailing, n, false).unwrap(), &data[..], "trailing");
+
+        // Flip a bit of the stored CRC64: caught when the xz check is the
+        // only one, skipped when the caller's SHA-256 will cover the bytes.
+        // SAFETY: `data` is valid for `data.len()` bytes.
+        let crc = unsafe { liblzma_sys::lzma_crc64(data.as_ptr(), data.len(), 0) }.to_le_bytes();
+        let at = enc
+            .windows(8)
+            .position(|w| w == crc)
+            .expect("CRC64 stored in stream");
+        let mut bad = enc.clone();
+        bad[at] ^= 1;
+        assert!(dec(&bad, n, false).is_err(), "check enforced");
+        assert_eq!(&*dec(&bad, n, true).unwrap(), &data[..], "check skipped");
+    }
+
+    #[test]
+    fn decoders_accept_every_xz_check_type() {
+        use liblzma::stream::{Check, Stream};
+        use std::io::Read;
+        let data: Vec<u8> = (0..50_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        for check in [Check::None, Check::Crc32, Check::Crc64, Check::Sha256] {
+            let stream = Stream::new_easy_encoder(6, check).unwrap();
+            let mut enc = Vec::new();
+            liblzma::read::XzEncoder::new_stream(&data[..], stream)
+                .read_to_end(&mut enc)
+                .unwrap();
+            for dec in [XzDecoder::Liblzma, XzDecoder::LzmaTurbo] {
+                for sha256_follows in [false, true] {
+                    let out = decode(&enc, data.len(), dec, sha256_follows)
+                        .unwrap_or_else(|e| panic!("{dec:?} {check:?}: {e}"));
+                    assert_eq!(&*out, &data[..]);
+                }
+            }
+        }
     }
 }

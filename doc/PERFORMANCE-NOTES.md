@@ -163,8 +163,9 @@ observable difference; non-default modes always still get the call.
 
 `--decoder libcompression` decodes segments with the OS's
 `compression_decode_buffer(COMPRESSION_LZMA)` (LZMA2 in the same .xz
-container) instead of the vendored liblzma. Opt-in; liblzma stays the
-default because it is portable and its behaviour is pinned by our build.
+container). Opt-in: it is macOS only and its behaviour is not pinned by our
+build. The comparison below is against vendored liblzma, the default at the
+time.
 Re-measured 2026-11-21 on the same M3 Max (16c / 128 GiB), same fixture,
 rev `931933a` with vendored liblzma 5.8.x — `scripts/bench.sh`, 1 warmup
 + 7 timed runs per cell, interleaved, warm cache, load 3–6, nothing else
@@ -233,6 +234,62 @@ Two implementation details matter:
   verifying (the default); with `--no-verify` only the size is checked.
 - **Per-thread scratch buffer** (`compression_decode_scratch_buffer_size`)
   instead of letting libcompression allocate one per call.
+
+## The default LZMA decoder: lzma-turbo
+
+Default since 2026-11-24 (replacing liblzma, still available as
+`--decoder liblzma`), on the measurements below. x86-64 and Linux speed have
+not been measured here.
+
+[lzma-turbo](https://crates.io/crates/lzma-turbo) 0.12.1 is a pure-Rust port
+of 7-Zip's `LzmaDec.c` / `Lzma2Dec.c` with 7-Zip's hand-written aarch64 /
+x86-64 asm decode loop. It has no one-shot slice API, so each segment goes
+through `XzReader` over the in-memory segment: LZMA2 decodes into a
+block-sized dictionary window (the crate clamps it to the block's declared
+size) and is copied into the segment buffer, which is zero-filled first
+because `Read` needs initialised memory. Acceptance matches the liblzma
+path: exactly `orig` bytes, xz check skipped when SHA-256 follows, bytes
+after the stream ignored. Built with `default-features = false` plus
+`native-crypto` (no encoder, no AWS-LC C dependency; SHA-256 xz checks go
+through `sha2`).
+
+Measured 2026-11-24, M3 Max (16c), Xcode 27.3 beta 2 fixture, liblzma 5.8.4
+vs lzma-turbo 0.12.1. **The machine was not idle** (load average 7–46,
+partly the benchmarks themselves). Only the single-thread and checksum-pass
+runs were interleaved; checksum-pass CPU time was stable to about ±1%. Treat
+wall times as indicative and re-measure on an idle machine before relying on
+them.
+
+| measure | liblzma | lzma-turbo | Δ |
+|---|---|---|---|
+| single thread, 23 real 16 MiB segments, best-of-7 | 178 MiB/s | 223 MiB/s | −20% time |
+| `inspect --verify` checksum pass (decode + SHA-256, all cores), 4 interleaved rounds | 5.94–6.09 s | 4.81–4.86 s | −20% |
+| same, user CPU | 69.1 s | 56.0 s | −19% |
+| `bench.py -d` (`--dry-run`), 1 warmup + 5 runs, not interleaved | 5.03 ± 0.02 s | 4.12 ± 0.03 s | −18% |
+| same, CPU | 71.5 s | 58.4 s | −18% |
+
+(`libcompression` measured 4.85 ± 0.05 s / 68.1 s CPU in that dry run, and
+66.2 s user CPU in the checksum pass.)
+The zero-fill costs nothing measurable (71.6 vs 71.8 ms/segment). Decoded
+output is byte-identical to liblzma's on all sampled segments, and all 624
+segments (9.75 GiB) of the fixture pass their SHA-256 checks.
+
+Full extract with writes (compression on, the default), `bench.py`, 1 warmup
++ 3 runs per variant, not interleaved, same busy machine:
+
+| | liblzma | lzma-turbo | Δ |
+|---|---|---|---|
+| wall | 12.96 ± 0.15 s | 12.59 ± 0.17 s | −2.9% |
+| CPU | 129.3 s | 120.1 s | −7% |
+| peak RSS | 5.81 GiB | 5.90 GiB | +1.6% |
+
+As "The one fact that explains the architecture" predicts, a full extract is
+writer-bound, so the ~18–20% decode saving shrinks to ~3% of wall time (about
+2 standard errors of the difference at n=3, so suggestive, not established)
+and ~7% of CPU.
+
+Costs of adoption: the crate declares `rust-version = 1.97.1` (xaea's MSRV
+moved from 1.88), and it is Apache-2.0 where xaea is MIT.
 
 ## What verification costs (and how it hides)
 
