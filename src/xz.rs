@@ -7,14 +7,14 @@ use std::sync::Arc;
 /// Which LZMA (.xz) implementation decodes segments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum XzDecoder {
-    /// liblzma (xz-utils), statically linked into xaea — portable default
-    #[default]
+    /// liblzma (xz-utils), statically linked into xaea
     Liblzma,
     /// Apple's libcompression (COMPRESSION_LZMA), provided by the OS — macOS
     /// only; full-extract speed is indistinguishable from liblzma
     Libcompression,
-    /// lzma-turbo: pure Rust, a port of 7-Zip's LZMA decoder (hand-written
-    /// asm loop on aarch64/x86-64), single-threaded per segment
+    /// lzma-turbo: Rust port of 7-Zip's LZMA decoder (asm loop on
+    /// aarch64/x86-64) — portable default
+    #[default]
     LzmaTurbo,
 }
 
@@ -71,8 +71,9 @@ pub unsafe fn segbuf_filled(
 ///
 /// `sha256_follows`: the caller will SHA-256 the decoded bytes against the
 /// segment checksum, which makes the .xz stream's own integrity check
-/// (e.g. CRC64 over the same decoded bytes) redundant, so liblzma skips it
-/// (`LZMA_IGNORE_CHECK`; ~9% of decode time for CRC64 streams). Apple's own
+/// (e.g. CRC64 over the same decoded bytes) redundant, so lzma-turbo and
+/// liblzma skip it (for liblzma, `LZMA_IGNORE_CHECK`; ~9% of decode time for
+/// CRC64 streams). Apple's own
 /// segments declare check type "none", so for them this flag changes nothing.
 /// Without verification the xz check stays on, if the stream has one.
 pub fn decode(data: &[u8], orig: usize, dec: XzDecoder, sha256_follows: bool) -> Result<SegBuf> {
@@ -321,5 +322,26 @@ mod tests {
         bad[at] ^= 1;
         assert!(dec(&bad, n, false).is_err(), "check enforced");
         assert_eq!(&*dec(&bad, n, true).unwrap(), &data[..], "check skipped");
+    }
+
+    #[test]
+    fn decoders_accept_every_xz_check_type() {
+        use liblzma::stream::{Check, Stream};
+        use std::io::Read;
+        let data: Vec<u8> = (0..50_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        for check in [Check::None, Check::Crc32, Check::Crc64, Check::Sha256] {
+            let stream = Stream::new_easy_encoder(6, check).unwrap();
+            let mut enc = Vec::new();
+            liblzma::read::XzEncoder::new_stream(&data[..], stream)
+                .read_to_end(&mut enc)
+                .unwrap();
+            for dec in [XzDecoder::Liblzma, XzDecoder::LzmaTurbo] {
+                for sha256_follows in [false, true] {
+                    let out = decode(&enc, data.len(), dec, sha256_follows)
+                        .unwrap_or_else(|e| panic!("{dec:?} {check:?}: {e}"));
+                    assert_eq!(&*out, &data[..]);
+                }
+            }
+        }
     }
 }

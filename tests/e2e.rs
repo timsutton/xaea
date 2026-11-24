@@ -509,7 +509,7 @@ fn evil_symlink_archives_are_refused_and_contained() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn libcompression_decoder_matches_liblzma() {
+fn decoders_produce_identical_trees() {
     let Some((dir, _)) = synthetic("libcompression") else {
         return;
     };
@@ -518,7 +518,7 @@ fn libcompression_decoder_matches_liblzma() {
     assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
 
     let mut trees = Vec::new();
-    for dec in ["liblzma", "libcompression"] {
+    for dec in ["lzma-turbo", "liblzma", "libcompression"] {
         let out = dir.join(format!("out-{dec}"));
         let run = xaea()
             .arg("extract")
@@ -544,7 +544,8 @@ fn libcompression_decoder_matches_liblzma() {
         contents.sort();
         trees.push((kinds, contents));
     }
-    assert_eq!(trees[0], trees[1], "both decoders produce the same tree");
+    assert_eq!(trees[0], trees[1], "liblzma produces the same tree");
+    assert_eq!(trees[0], trees[2], "libcompression produces the same tree");
     fs::remove_dir_all(&dir).ok();
 }
 

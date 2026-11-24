@@ -2,7 +2,7 @@
 name = "xaea"
 version = "0.2.0"
 edition = "2024"
-# Set by lzma-turbo 0.12 (`--decoder lzma-turbo`), which declares 1.97.1. The
+# Set by lzma-turbo 0.12 (the default decoder), which declares 1.97.1. The
 # code itself needs only let-chains (1.88), and the locked sha2 0.11 and time
 # 0.3 declare 1.88 too. (The RustCrypto security floor, rsa 0.10 /
 # crypto-bigint >=0.7.6 for RUSTSEC-2023-0071 / RUSTSEC-2026-0387, is 1.87.)
@@ -26,14 +26,14 @@ x509-parser = "0.18"
 p256 = { version = "0.14", features = ["ecdsa"] }
 p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
-# Vendored xz-utils (5.8.x), statically linked; we call the one-shot
-# lzma_stream_buffer_decode directly. From the liblzma crate family, the
+# Vendored xz-utils (5.8.x), statically linked, behind `--decoder liblzma`; we
+# call the one-shot lzma_stream_buffer_decode directly. From the liblzma crate family, the
 # maintained successor of xz2/lzma-sys (whose xz 5.2.5 decoded ~23% slower).
 liblzma-sys = { version = "0.4", features = ["static"] }
-# Pure-Rust port of 7-Zip's LZMA decoder (`--decoder lzma-turbo`). Only the
-# .xz decoder: no encoder, no AWS-LC (SHA-256 xz checks are skipped or
-# verified by xaea itself).
-lzma-turbo = { version = "0.12", default-features = false, features = ["std", "asm", "xz"] }
+# Pure-Rust port of 7-Zip's LZMA decoder, the default segment decoder. Only the
+# .xz decoder: no encoder, and SHA-256 xz checks through our own sha2
+# (`native-crypto`) rather than the default AWS-LC C library.
+lzma-turbo = { version = "0.12", default-features = false, features = ["std", "asm", "xz", "native-crypto"] }
 signature = "3"
 ecdsa = "0.17"
 # Verify-only: std + DER encoding + pkcs1v15 (digests come from our own sha2;

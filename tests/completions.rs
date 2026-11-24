@@ -49,7 +49,7 @@ fn decoder_enum_values_are_offered() {
     // candidates must show up — bash/zsh/fish all spell them out.
     for shell in ["bash", "zsh", "fish"] {
         let s = script(shell);
-        for value in ["liblzma", "libcompression"] {
+        for value in ["lzma-turbo", "liblzma", "libcompression"] {
             assert!(
                 s.contains(value),
                 "{shell}: completions never offer --decoder {value}"

@@ -10,9 +10,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `xaea cat <archive> <member>`: write one regular file from an archive to
   stdout (e.g. `xaea cat Xcode.aea Xcode-beta.app/Contents/Info.plist | plutil -p -`),
   without extracting the tree.
-* `--decoder lzma-turbo`: decode segments with the pure-Rust lzma-turbo crate
-  (a port of 7-Zip's LZMA decoder), ~20% less decode CPU than liblzma on
-  Apple Silicon. liblzma stays the default. Requires Rust 1.97.1 to build.
+* `--decoder lzma-turbo`, now the default: segments are decoded with the
+  lzma-turbo crate (a Rust port of 7-Zip's LZMA decoder), ~20% less decode CPU
+  than liblzma on Apple Silicon (~3% shorter full extract, which is
+  writer-bound). `--decoder liblzma` selects the previous default. Building now
+  requires Rust 1.97.1.
 
 ## 0.2.0 - 2026-11-22
 
