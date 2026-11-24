@@ -258,9 +258,11 @@ on an idle machine before relying on them.
 | single thread, 23 real 16 MiB segments, best-of-7 | 178 MiB/s | 223 MiB/s | −20% time |
 | `inspect --verify` checksum pass (decode + SHA-256, all cores), 4 interleaved rounds | 5.94–6.09 s | 4.81–4.86 s | −20% |
 | same, user CPU | 69.1 s | 56.0 s | −19% |
-| `bench.py -d` (`--dry-run`), 6 runs, not interleaved | 5.38 ± 0.73 s | 4.32 ± 0.12 s | −20% |
+| `bench.py -d` (`--dry-run`), 1 warmup + 5 runs, not interleaved | 5.03 ± 0.02 s | 4.12 ± 0.03 s | −18% |
+| same, CPU | 71.5 s | 58.4 s | −18% |
 
-(`libcompression` measured 66.2 s CPU / 5.10 s dry-run in the same sessions.)
+(`libcompression` measured 4.85 ± 0.05 s / 68.1 s CPU in that dry run, and
+66.2 s user CPU in the checksum pass.)
 The zero-fill costs nothing measurable (71.6 vs 71.8 ms/segment). Decoded
 output is byte-identical to liblzma's on all sampled segments, and all 624
 segments (9.75 GiB) of the fixture pass their SHA-256 checks.
@@ -275,7 +277,7 @@ Full extract with writes (compression on, the default), `bench.py`, 1 warmup
 | peak RSS | 5.81 GiB | 5.90 GiB | +1.6% |
 
 As "The one fact that explains the architecture" predicts, a full extract is
-writer-bound, so the ~20% decode saving shrinks to ~3% of wall time (about
+writer-bound, so the ~18–20% decode saving shrinks to ~3% of wall time (about
 2 standard errors of the difference at n=3, so suggestive, not established)
 and ~7% of CPU.
 
