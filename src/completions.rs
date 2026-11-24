@@ -10,9 +10,8 @@ use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 use std::io;
 
-/// Write the completion script for `shell` to stdout. Write errors are
-/// silently ignored: `clap_complete`'s generator writes to a `&mut dyn
-/// Write` and cannot report them, so there is nothing to propagate.
+/// Write the completion script for `shell` to stdout. Panics if the write
+/// fails (including on a closed pipe), as `clap_complete`'s generator does.
 pub fn print(shell: Shell) {
     let mut cmd = Cli::command();
     generate(shell, &mut cmd, "xaea", &mut io::stdout());
