@@ -44,7 +44,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * Performance improvements yielding roughly 10% faster extraction:
   * Faster final symlink pass ([PR 55](https://github.com/timsutton/xaea/pull/55))
-  * Reduce syscalls and liblzma improvements available on x86_64 systems ([PR 38](https://github.com/timsutton/xaea/pull/38))
+  * Fewer syscalls, a faster LZMA decoder, and a deeper read-ahead ([PR 38](https://github.com/timsutton/xaea/pull/38)). On Apple Silicon the decode-only gain is carried by the xz 5.8.4 crate swap (~4% on an M4 Max), not by the one-shot decode call or the removed per-segment copy
 
 * `extract` now takes the output directory as an optional
   positional argument (`xaea extract FILE [OUT_DIR]`) instead of the
