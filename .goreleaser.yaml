@@ -43,11 +43,12 @@ universal_binaries:
 # build (and any universal-binary merge) and before archiving, so the signed
 # binary is what lands in the tarball. A bare Mach-O can't be stapled;
 # Gatekeeper looks the ticket up online on first run of a quarantined copy.
-# Skipped when MACOS_SIGN_P12 is unset (snapshots, forks); release.yml
-# refuses to publish a real release without the secrets.
+# Skipped in snapshot builds (dry runs); a real release always signs and
+# notarizes — with the secrets missing, the signing step fails the release
+# rather than publishing unsigned binaries.
 notarize:
   macos:
-    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+    - enabled: '{{ not .IsSnapshot }}'
       ids:
         - darwin-universal
       sign:

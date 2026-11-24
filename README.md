@@ -232,11 +232,10 @@ five repository secrets — `MACOS_SIGN_P12` (base64 `.p12`),
 Snapshot runs skip signing. A bare binary can't be stapled, so Gatekeeper
 checks the notarization ticket online the first time a quarantined copy runs.
 
-Before it runs, the workflow installs
-[`cosign`](https://github.com/sigstore/cosign-installer), which makes
-goreleaser-action verify the GoReleaser binary it downloads — both its
-`checksums.txt` SHA-256 and that file's sigstore signature against
-GoReleaser's release-workflow OIDC identity — instead of fetching it on trust.
+The Release workflow installs its toolchain (GoReleaser, cosign, zig and
+cargo-zigbuild) with Homebrew and runs `scripts/release.sh`, which also
+verifies the tag against the crate version, extracts the release notes and
+checks the macOS signatures of the shipped archive.
 
 ## Acknowledgments
 
