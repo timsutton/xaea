@@ -27,7 +27,7 @@ ARCHIVEUTIL = "/usr/bin/archiveutil"
 EXAMPLES = """\
 examples:
   scripts/bench.py Xcode.aea                            # full extract, defaults
-  scripts/bench.py Xcode.aea 'liblzma=--decoder liblzma' 'libcompression=--decoder libcompression'
+  scripts/bench.py -d Xcode.aea 'lzma-turbo=--decoder lzma-turbo' 'liblzma=--decoder liblzma'
   scripts/bench.py -d -r 10 Xcode.aea 'j8=-j 8' 'j15=-j 15'
   scripts/bench.py -a Xcode.aea                         # xaea vs archiveutil
 """

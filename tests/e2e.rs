@@ -507,18 +507,22 @@ fn evil_symlink_archives_are_refused_and_contained() {
     fs::remove_dir_all(&dir).ok();
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn decoders_produce_identical_trees() {
-    let Some((dir, _)) = synthetic("libcompression") else {
+    let Some((dir, _)) = synthetic("decoders") else {
         return;
     };
-    let v = inspect(&dir, &["--verify", "--json", "--decoder", "libcompression"]);
-    assert_eq!(check(&v, "checksums_ok"), 7);
-    assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
+    let mut decoders = vec!["lzma-turbo", "liblzma"];
+    if cfg!(target_os = "macos") {
+        decoders.push("libcompression");
+    }
 
     let mut trees = Vec::new();
-    for dec in ["lzma-turbo", "liblzma", "libcompression"] {
+    for &dec in &decoders {
+        let v = inspect(&dir, &["--verify", "--json", "--decoder", dec]);
+        assert_eq!(check(&v, "checksums_ok"), 7, "{dec}");
+        assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
+
         let out = dir.join(format!("out-{dec}"));
         let run = xaea()
             .arg("extract")
@@ -544,8 +548,9 @@ fn decoders_produce_identical_trees() {
         contents.sort();
         trees.push((kinds, contents));
     }
-    assert_eq!(trees[0], trees[1], "liblzma produces the same tree");
-    assert_eq!(trees[0], trees[2], "libcompression produces the same tree");
+    for (dec, tree) in decoders.iter().zip(&trees).skip(1) {
+        assert_eq!(&trees[0], tree, "{dec} produces the same tree");
+    }
     fs::remove_dir_all(&dir).ok();
 }
 
