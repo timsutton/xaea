@@ -48,9 +48,9 @@
 //! one-line progress report, like `dd` and friends; on Linux, which has no
 //! SIGINFO, the same report is available via `SIGUSR1`.
 
-mod decode;
+pub(crate) mod decode;
 mod links;
-mod paths;
+pub(crate) mod paths;
 mod sink;
 mod status;
 mod writer;
@@ -202,7 +202,7 @@ pub fn resolve_compress(out: &Path, want: Compress, dry: bool) -> Result<bool> {
 /// then the root/cluster header MACs — microseconds next to decoding.
 /// Returns the main key so the caller can run the expensive segment-MAC
 /// pass concurrently with the pipeline (joined before the final pass).
-fn verify_upfront(env: &Envelope) -> Result<Key> {
+pub(crate) fn verify_upfront(env: &Envelope) -> Result<Key> {
     let chain = env
         .certificate_chain()
         .context("no certificate-chain auth pair")?;

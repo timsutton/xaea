@@ -26,7 +26,7 @@ fn read_pread_into(f: &File, off: u64, buf: &mut [u8]) -> Result<()> {
 
 /// Decoder-side view of a segment (owned/Copy so threads can own it).
 #[derive(Clone, Copy)]
-pub(super) struct SegInfo {
+pub(crate) struct SegInfo {
     off: u64,
     comp: u32,
     orig: u32,
@@ -35,7 +35,7 @@ pub(super) struct SegInfo {
 }
 
 impl SegInfo {
-    pub(super) fn new(seg: &Segment, verify: bool) -> Self {
+    pub(crate) fn new(seg: &Segment, verify: bool) -> Self {
         SegInfo {
             off: seg.data_off as u64,
             comp: seg.comp,
@@ -53,7 +53,7 @@ impl SegInfo {
 /// it carries a checksum, check the SHA-256 of the *decoded* bytes (the AEA
 /// checksum covers decompressed data — erratum 3). SHA-256 runs while the
 /// other decoders are busy; it is cheap next to LZMA.
-pub(super) fn decode_segment(
+pub(crate) fn decode_segment(
     fh: &File,
     sg: &SegInfo,
     index: usize,

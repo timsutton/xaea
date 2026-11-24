@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+* `xaea cat <archive> <member>`: write one regular file from an archive to
+  stdout (e.g. `xaea cat Xcode.aea Xcode-beta.app/Contents/Info.plist | plutil -p -`),
+  without extracting the tree.
+
 ## 0.2.0 - 2026-11-22
 
 ### Added
