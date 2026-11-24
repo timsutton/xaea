@@ -248,10 +248,11 @@ after the stream ignored. Built with `default-features = false` (no encoder,
 no AWS-LC C dependency).
 
 Measured 2026-11-24, M3 Max (16c), Xcode 27.3 beta 2 fixture, liblzma 5.8.4
-vs lzma-turbo 0.12.1. **The machine was not idle** (load average 7–26 from
-other work, so absolute times are inflated); runs were interleaved and CPU
-time is stable to ±0.5%, but treat wall times as indicative and re-measure
-on an idle machine before relying on them.
+vs lzma-turbo 0.12.1. **The machine was not idle** (load average 7–46,
+partly the benchmarks themselves). Only the single-thread and checksum-pass
+runs were interleaved; checksum-pass CPU time was stable to about ±1%. Treat
+wall times as indicative and re-measure on an idle machine before relying on
+them.
 
 | measure | liblzma | lzma-turbo | Δ |
 |---|---|---|---|
