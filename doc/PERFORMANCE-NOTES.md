@@ -341,23 +341,23 @@ in clean worktrees, and time `extract --dry-run` on the fixture — 9 runs
 per binary, interleaved in both orders, machine quiet (load ≈ 1.4), on an
 M4 Max (not the M3 Max: that machine is too busy to benchmark reliably):
 
-| bin | mean | σ | Δ vs base |
-|---|---|---|---|
-| base (`ce88662^`, xz2 0.1.7 / lzma-sys 0.1.20 / xz 5.2.5) | 4.608 s | 0.008 | — |
-| base + `-DNDEBUG` (asserts compiled out) | 4.588 s | 0.006 | −0.4% |
-| xz (`ce88662`, liblzma 0.4.9 / xz 5.8.4) | 4.414 s | 0.007 | −4.2% |
-| oneshot (`4051cca`) | 4.400 s | 0.009 | −0.3% |
-| arc (`6017a12`) | 4.386 s | 0.008 | −0.3% |
+| bin | mean | σ | Δ vs base | Δ vs parent commit |
+|---|---|---|---|---|
+| base (`ce88662^`, xz2 0.1.7 / lzma-sys 0.1.20 / xz 5.2.5) | 4.608 s | 0.008 | — | — |
+| base + `-DNDEBUG` (asserts compiled out; same source as base) | 4.588 s | 0.006 | −0.4% | — |
+| xz (`ce88662`, liblzma 0.4.9 / xz 5.8.4) | 4.414 s | 0.007 | −4.2% | −4.2% |
+| oneshot (`4051cca`) | 4.400 s | 0.009 | −4.5% | −0.3% |
+| arc (`6017a12`) | 4.386 s | 0.008 | −4.8% | −0.3% |
 
 Total: 4.608 → 4.386 s (−4.8%), consistent with the −4.4% the PR reported
 (4.63 → 4.43 s). Per commit: the xz bump ~4.2%, the one-shot call ~0.3%,
 the direct-into-`Arc` copy ~0.3%.
 
 Two things this rules out: the C decoder itself is provably identical on
-aarch64 (the single-segment microbenchmark above shows 159.1 vs 160.9 ms
-best), and compiling the old decoder with `NDEBUG` (its live `assert()`s
-compiled out) is worth only −0.4% — so neither the decoder's speed nor
-the assert fix explains the −4.2%. The micro-cause of the crate-swap
+aarch64 (the single-segment microbenchmark above shows 124.7 vs 125.0 ms
+best on M4 Max), and compiling the old decoder with `NDEBUG` (its live
+`assert()`s compiled out) is worth only −0.4% — so neither the decoder's
+speed nor the assert fix explains the −4.2%. The micro-cause of the crate-swap
 gain (Rust wrapper, LTO/codegen, or both) was not isolated. What is
 settled is the split between the decode commits: the PR's "gains come
 from the one-shot call and the removed copy" framing is not supported by
