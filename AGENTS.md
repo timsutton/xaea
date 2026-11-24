@@ -16,7 +16,8 @@ There's a convention of using a `fixtures` directory to contain .aea files from 
 
 ## Branching
 
-- Do all work in a dedicated branch, in isolated git worktrees. Start new work from the upstream `main` unless the work is explicitly being derived from another work-in-progress branch.
+- Do all work in a dedicated branch. Start new work from the upstream `main` unless the work is explicitly being derived from another work-in-progress branch.
+- Isolate work in a git worktree — unless you are already running inside one. If the environment you are running in already provides a worktree (for example, an Orca-managed workspace), treat the current checkout as the isolated worktree: do not create an additional worktree nested inside it.
 - Never merge `main` into your work branch. If you need to fix merge conflicts, do it by rebasing on top of the upstream `main`.
 
 ## Opening pull requests
