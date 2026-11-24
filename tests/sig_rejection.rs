@@ -33,8 +33,7 @@ fn tamper_set(tag: &str) -> Option<PathBuf> {
     let has_crypto = Command::new("python3")
         .args(["-I", "-c", "import cryptography"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     if !has_crypto {
         let msg = "python3 with `cryptography` not available: the synthetic \
                    AEA builder cannot run, so the corrupt-signature rejection \
