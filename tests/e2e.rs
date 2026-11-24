@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{build_archive, check, manifest, xaea};
+use common::{build_archive, check, manifest, sig_off, xaea};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -289,31 +289,60 @@ fn tampering_is_detected() {
     };
     let aea = dir.join("archive.aea");
     let meta = inspect(&dir, &["--json"]);
-    let auth_bytes = meta["auth"][0]["bytes"].as_u64().unwrap() as usize;
-    let sig_off = 12 + auth_bytes;
-    let rootmac_off = sig_off + 128 + 32 + 32;
+    let off = sig_off(&aea);
+    let rootmac_off = off + 128 + 32 + 32;
     let c1 = dir.join("t1.aea");
 
     // Baseline sanity for the copy+flip path itself.
     let base = verify_report(&aea, &["--no-checksums"]).expect("clean copy verifies");
     assert_eq!(check(&base, "root_mac_ok"), true);
 
-    // 1) Signature field corrupted -> refused outright (undecodable DER)
-    //    or content_signature_ok false; either counts.
+    // 1) Signature field corrupted -> parseable report, content signature
+    //    failed, header MACs intact. The signature field is zeroed out of the
+    //    signed prefix and is not part of any MAC, so the header checks
+    //    must all stay green.
     fs::copy(&aea, &c1).unwrap();
-    flip_byte(&c1, sig_off + 10);
-    match verify_report(&c1, &["--no-checksums"]) {
-        None => {}
-        Some(v) => assert_eq!(check(&v, "content_signature_ok"), false, "sig byte flip"),
-    }
+    flip_byte(&c1, off + 10);
+    let v =
+        verify_report(&c1, &["--no-checksums"]).expect("sig-field flip must still print a report");
+    assert_eq!(check(&v, "content_signature_ok"), false, "sig byte flip");
+    assert_eq!(
+        check(&v, "signature_padded_ok"),
+        true,
+        "sig flip stays padded"
+    );
+    assert_eq!(
+        check(&v, "root_mac_ok"),
+        true,
+        "sig flip must not touch root MAC"
+    );
+    assert_eq!(
+        check(&v, "cluster_macs_ok"),
+        true,
+        "sig flip must not touch cluster MACs"
+    );
+    assert_eq!(
+        check(&v, "segment_macs_ok"),
+        true,
+        "sig flip must not touch segment MACs"
+    );
 
     // 2) Root MAC field corrupted -> reported false (the MAC is compared,
     //    not parsed). Since review #3, failing checks must also exit
-    //    non-zero for CI use.
+    //    non-zero for CI use. The root MAC sits inside the signed prefix
+    //    (the signature is computed over header + auth + sig-field-zeroed +
+    //    ikm + mainsalt + rootmac + roothdr + chmac0), so the content
+    //    signature fails too — the format gives no isolated root-MAC-only
+    //    failure, and the report must show exactly that.
     fs::copy(&aea, &c1).unwrap();
     flip_byte(&c1, rootmac_off + 5);
     let v = verify_report(&c1, &["--no-checksums"]).expect("root MAC flip still reportable");
     assert_eq!(check(&v, "root_mac_ok"), false, "root MAC flip detected");
+    assert_eq!(
+        check(&v, "content_signature_ok"),
+        false,
+        "root MAC flip changes signed bytes: content signature must fail too"
+    );
     let st = xaea()
         .arg("inspect")
         .arg(&c1)
