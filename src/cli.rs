@@ -24,6 +24,9 @@ pub enum Commands {
     Extract(ExtractArgs),
     /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
     Completions(CompletionsArgs),
+    /// Write one regular file from an archive to stdout (e.g. `xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -`)
+    #[command(visible_alias = "c")]
+    Cat(CatArgs),
 }
 
 // Plain comments, not doc comments, on the argument structs: clap would
@@ -106,6 +109,28 @@ pub struct ExtractArgs {
     /// for an Xcode archive on M3 Max, at 2.6× the disk space)
     #[arg(long, overrides_with = "compress")]
     pub no_compress: bool,
+}
+
+#[derive(Args)]
+pub struct CatArgs {
+    /// Archive path; `-` reads the archive from standard input
+    pub file: PathBuf,
+    /// Path of the regular file within the archive, as extraction would
+    /// place it (`./x` and `a/../x` normalize the same way). Directories
+    /// and symlinks are refused: `cat` prints file contents, not link text.
+    pub member: String,
+    /// Skip all integrity and authenticity checks (signature, cert chain,
+    /// MAC, checksums). Only for trusted or damaged archives. Verification
+    /// is on by default.
+    #[arg(long)]
+    pub no_verify: bool,
+    /// Decoder threads (default: cores-1, min 2)
+    #[arg(short, long)]
+    pub jobs: Option<usize>,
+    /// LZMA decoder: `liblzma` (vendored xz-utils, the default) or
+    /// `libcompression` (Apple's OS-provided library; macOS only)
+    #[arg(long, value_enum, default_value_t = XzDecoder::Liblzma)]
+    pub decoder: XzDecoder,
 }
 
 #[derive(Args)]

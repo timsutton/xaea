@@ -1,5 +1,6 @@
 //! Subcommand implementations, and what they share.
 
+pub mod cat;
 pub mod extract;
 pub mod inspect;
 

@@ -30,7 +30,7 @@ fn clamp(rel: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-pub(super) fn sanitize(p: &[u8]) -> Result<PathBuf> {
+pub(crate) fn sanitize(p: &[u8]) -> Result<PathBuf> {
     let s = std::str::from_utf8(p).context("non-UTF8 path")?;
     clamp(s)
 }
