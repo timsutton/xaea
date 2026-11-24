@@ -8,25 +8,75 @@ use std::path::PathBuf;
 
 /// xaea — fast extractor for Apple Encrypted Archives (Xcode edition)
 #[derive(Parser)]
-#[command(version)]
+#[command(
+    version,
+    after_help = "\
+Examples:
+  xaea inspect Xcode.aea                # geometry, key material, signing info
+  xaea extract Xcode.aea ~/Applications # verify, then extract (default: .)
+  xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -
+
+Docs: https://github.com/timsutton/xaea"
+)]
 pub struct Cli {
     #[command(subcommand)]
-    pub cmd: Commands,
+    pub cmd: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
     /// Parse and (optionally) verify an AEA file
-    #[command(visible_alias = "i")]
+    #[command(
+        visible_alias = "i",
+        after_help = "\
+Examples:
+  xaea inspect Xcode.aea                 # one-shot report
+  xaea inspect Xcode.aea --verify        # also MACs, signature chain, checksums
+  xaea inspect Xcode.aea --verify --json | jq .checks
+
+Docs: https://github.com/timsutton/xaea"
+    )]
     Inspect(InspectArgs),
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
-    #[command(visible_alias = "x")]
+    #[command(
+        visible_alias = "x",
+        after_help = "\
+Examples:
+  xaea extract Xcode.aea                      # verify + extract into ./
+  xaea extract Xcode.aea ~/Applications       # extract into a given directory
+  xaea extract Xcode.aea /tmp/out --dry-run   # decode + parse, write nothing
+
+Docs: https://github.com/timsutton/xaea"
+    )]
     Extract(ExtractArgs),
     /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
+    #[command(after_help = "\
+Examples:
+  xaea completions zsh  > ~/.zfunc/_xaea
+  xaea completions bash > /usr/local/etc/bash_completion.d/xaea
+
+Docs: https://github.com/timsutton/xaea")]
     Completions(CompletionsArgs),
     /// Write one regular file from an archive to stdout (e.g. `xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -`)
-    #[command(visible_alias = "c")]
+    #[command(
+        visible_alias = "c",
+        after_help = "\
+Examples:
+  xaea cat Xcode.aea Xcode.app/Contents/Info.plist
+  xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -
+  xaea cat - Xcode.app/Contents/Info.plist < Xcode.aea
+
+Docs: https://github.com/timsutton/xaea"
+    )]
     Cat(CatArgs),
+    /// Print the xaea version
+    #[command(after_help = "\
+Examples:
+  xaea version
+  xaea version --json
+
+Docs: https://github.com/timsutton/xaea")]
+    Version(VersionArgs),
 }
 
 // Plain comments, not doc comments, on the argument structs: clap would
@@ -139,6 +189,13 @@ pub struct CompletionsArgs {
     /// Shell to generate completions for
     #[arg(value_enum)]
     pub shell: Shell,
+}
+
+#[derive(Args)]
+pub struct VersionArgs {
+    /// Machine-readable output
+    #[arg(long)]
+    pub json: bool,
 }
 
 impl ExtractArgs {

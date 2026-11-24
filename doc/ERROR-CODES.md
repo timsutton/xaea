@@ -24,7 +24,7 @@ branch on them, so:
 
 | Code | Meaning | Typical cause | Retryable? |
 |-----:|---------|---------------|------------|
-| 0 | Success | Extract/inspect completed; also `--help` and `--version` | — |
+| 0 | Success | Extract/inspect completed; also `--help`, `--version`, bare `xaea` (prints help) and `version` | — |
 | 1 | Generic failure | Environment or internal failure not tied to the archive: thread spawn or panic, `available_parallelism`, JSON serialization | Depends on cause |
 | 2 | Usage error | Unknown subcommand or flag, missing argument (rejected by clap before any work); `--decoder libcompression` on a non-macOS machine | No — fix the command line |
 | 3 | Input archive unreadable | Path does not exist, no read permission, input is a directory, mmap/IO error while reading the input | Sometimes — fix permissions or retry after a transient storage failure |

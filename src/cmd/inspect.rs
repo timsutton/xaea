@@ -9,15 +9,65 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::time::Instant;
 
-/// The outcome of `--verify`.
+/// The outcome of `--verify`, kept as typed values so the human report and
+/// the `--json` report are rendered from the same data.
 struct Verification {
-    /// One JSON object per group of checks, in report order.
-    checks: Vec<Value>,
     certs: Vec<ParsedCert>,
+    root_mac_ok: bool,
+    cluster_macs_ok: bool,
+    chmac_variant: Option<usize>,
+    segment_macs_failed: Vec<u32>,
+    /// `None` when the checksum pass was skipped (`--no-checksums`).
+    checksums: Option<Checksums>,
+    content_sig_ok: bool,
+    sig_padded_ok: bool,
+    chain_ok: Vec<bool>,
+    chain_all_ok: bool,
+    ca_ok: bool,
+    valid_now: bool,
+    trusted_root: bool,
     /// Every integrity check passed (any false ⇒ non-zero exit, review
     /// #3). `trusted_root` is *reported* but does not count: re-signed or
     /// private-CA archives stay inspectable.
     ok: bool,
+}
+
+/// The per-segment checksum pass (skipped with `--no-checksums`).
+struct Checksums {
+    passed: u64,
+    failed: Vec<u32>,
+    total: u64,
+    seconds: f64,
+}
+
+impl Verification {
+    /// One JSON object per group of checks, in report order.
+    fn checks_json(&self) -> Vec<Value> {
+        let mut checks = vec![json!({
+            "root_mac_ok": self.root_mac_ok,
+            "cluster_macs_ok": self.cluster_macs_ok,
+            "chmac_salt_variant": self.chmac_variant,
+            "segment_macs_ok": self.segment_macs_failed.is_empty(),
+            "segment_macs_failed": self.segment_macs_failed,
+        })];
+        if let Some(c) = &self.checksums {
+            checks.push(json!({
+                "checksums_ok": c.passed,
+                "checksums_failed": c.failed,
+                "checksum_seconds": c.seconds,
+            }));
+        }
+        checks.push(json!({
+            "content_signature_ok": self.content_sig_ok,
+            "signature_padded_ok": self.sig_padded_ok,
+            "chain_ok": self.chain_ok,
+            "chain_all_ok": self.chain_all_ok,
+            "ca_ok": self.ca_ok,
+            "valid_now": self.valid_now,
+            "trusted_root": self.trusted_root,
+        }));
+        checks
+    }
 }
 
 pub fn run(args: &InspectArgs) -> Result<()> {
@@ -26,7 +76,6 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     let file = &archive.map[..];
     let env = Envelope::parse(file).with_exit(Exit::Rejected)?;
     let verification = args.verify.then(|| verify(&env, args)).transpose()?;
-    let checks = verification.as_ref().map_or(&[][..], |v| &v.checks[..]);
 
     if args.json {
         let summary = json!({
@@ -48,7 +97,7 @@ pub fn run(args: &InspectArgs) -> Result<()> {
             "clusters": env.clusters.len(),
             "segments": env.total_segments,
             "geometry_ok": true,
-            "checks": checks,
+            "checks": verification.as_ref().map_or(Vec::new(), Verification::checks_json),
         });
         println!("{}", serde_json::to_string_pretty(&summary)?);
         if verification.is_some_and(|v| !v.ok) {
@@ -86,9 +135,7 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     }
 
     if let Some(v) = verification {
-        for check in &v.checks {
-            println!("  check: {check}");
-        }
+        print_checks(&v);
         for c in &v.certs {
             println!(
                 "  cert: {}  ← {}  [{} {}]",
@@ -100,6 +147,55 @@ pub fn run(args: &InspectArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_checks(v: &Verification) {
+    let sym = |ok: bool| if ok { "✓" } else { "✗" };
+    println!("  {} root MACs", sym(v.root_mac_ok));
+    let salt = v
+        .chmac_variant
+        .map(|n| format!(" (salt layout {n})"))
+        .unwrap_or_default();
+    println!("  {} cluster MACs{salt}", sym(v.cluster_macs_ok));
+    if v.segment_macs_failed.is_empty() {
+        println!("  ✓ segment MACs");
+    } else {
+        println!(
+            "  ✗ segment MACs — failed segments: {}",
+            v.segment_macs_failed
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Some(c) = &v.checksums {
+        if c.failed.is_empty() {
+            println!(
+                "  ✓ segment checksums ({}/{} in {:.2}s)",
+                c.passed, c.total, c.seconds
+            );
+        } else {
+            println!(
+                "  ✗ segment checksums — {} of {} failed",
+                c.failed.len(),
+                c.total
+            );
+        }
+    }
+    println!("  {} content signature", sym(v.content_sig_ok));
+    println!("  {} signature padding", sym(v.sig_padded_ok));
+    println!(
+        "  {} certificate chain ({} links)",
+        sym(v.chain_all_ok),
+        v.chain_ok.len()
+    );
+    println!("  {} issuers are CA:true", sym(v.ca_ok));
+    println!("  {} certificates within validity window", sym(v.valid_now));
+    println!(
+        "  {} trusted Apple root (reported, not a gate)",
+        sym(v.trusted_root)
+    );
 }
 
 /// Run every check `--verify` asks for. Checks that run and fail are
@@ -122,41 +218,39 @@ fn verify(env: &Envelope, args: &InspectArgs) -> Result<Verification> {
         .context("MAC verification")
         .with_exit(Exit::Verification)?;
     let mut ok = mac.root_mac_ok && mac.cluster_macs_ok && mac.segmac_failed.is_empty();
-    let mut checks = vec![json!({
-        "root_mac_ok": mac.root_mac_ok,
-        "cluster_macs_ok": mac.cluster_macs_ok,
-        "chmac_salt_variant": mac.chmac_variant,
-        "segment_macs_ok": mac.segmac_failed.is_empty(),
-        "segment_macs_failed": mac.segmac_failed,
-    })];
+    let mut checksums = None;
     if !args.no_checksums {
         let t0 = Instant::now();
         let (passed, failed) = env
             .verify_checksums(std::thread::available_parallelism()?.get(), args.decoder)
             .with_exit(Exit::Verification)?;
         ok &= failed.is_empty();
-        checks.push(json!({
-            "checksums_ok": passed, "checksums_failed": failed,
-            "checksum_seconds": t0.elapsed().as_secs_f64(),
-        }));
+        checksums = Some(Checksums {
+            passed,
+            total: passed + failed.len() as u64,
+            failed,
+            seconds: t0.elapsed().as_secs_f64(),
+        });
     }
     ok &= auth.content_sig_ok
         && auth.sig_padded_ok
         && auth.chain_all_ok
         && auth.ca_ok
         && auth.valid_now;
-    checks.push(json!({
-        "content_signature_ok": auth.content_sig_ok,
-        "signature_padded_ok": auth.sig_padded_ok,
-        "chain_ok": auth.chain_ok,
-        "chain_all_ok": auth.chain_all_ok,
-        "ca_ok": auth.ca_ok,
-        "valid_now": auth.valid_now,
-        "trusted_root": auth.trusted_root,
-    }));
     Ok(Verification {
-        checks,
         certs: auth.certs,
+        root_mac_ok: mac.root_mac_ok,
+        cluster_macs_ok: mac.cluster_macs_ok,
+        chmac_variant: mac.chmac_variant,
+        segment_macs_failed: mac.segmac_failed,
+        checksums,
+        content_sig_ok: auth.content_sig_ok,
+        sig_padded_ok: auth.sig_padded_ok,
+        chain_ok: auth.chain_ok,
+        chain_all_ok: auth.chain_all_ok,
+        ca_ok: auth.ca_ok,
+        valid_now: auth.valid_now,
+        trusted_root: auth.trusted_root,
         ok,
     })
 }

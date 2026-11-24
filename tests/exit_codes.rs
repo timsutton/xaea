@@ -43,7 +43,7 @@ fn flip_copy(src: &Path, dst: &Path, off: usize) {
 fn success_and_usage_codes() {
     assert_eq!(code(&["--version"]), 0, "--version succeeds");
     assert_eq!(code(&["--help"]), 0, "--help succeeds");
-    assert_eq!(code(&[]), 2, "missing subcommand is a usage error");
+    assert_eq!(code(&[]), 0, "bare invocation prints help and succeeds");
     assert_eq!(code(&["bogus"]), 2, "unknown subcommand is a usage error");
     assert_eq!(code(&["inspect", "--bogus-flag", "x"]), 2, "unknown flag");
     assert_eq!(code(&["inspect"]), 2, "missing required argument");

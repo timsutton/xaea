@@ -35,6 +35,20 @@ pub enum Exit {
     Extraction = 6,
 }
 
+impl Exit {
+    /// SCREAMING_SNAKE_CASE name used in the `--json` error envelope.
+    pub fn code_name(self) -> &'static str {
+        match self {
+            Exit::Generic => "GENERIC",
+            Exit::Usage => "USAGE",
+            Exit::Unreadable => "UNREADABLE",
+            Exit::Rejected => "REJECTED",
+            Exit::Verification => "VERIFICATION",
+            Exit::Extraction => "EXTRACTION",
+        }
+    }
+}
+
 impl From<Exit> for ExitCode {
     fn from(exit: Exit) -> Self {
         ExitCode::from(exit as u8)
@@ -87,9 +101,10 @@ macro_rules! bail_exit {
 }
 pub(crate) use bail_exit;
 
-/// Print a failed command's error exactly as `fn main() -> Result<()>`
-/// would have, and map the result to the process exit code.
-pub fn report(result: anyhow::Result<()>) -> ExitCode {
+/// Print a failed command's error, and map the result to the process exit
+/// code. With `--json` the error goes to stderr as a machine-readable
+/// object (`{"error":{"code","exit_code","message"}}`); stdout stays empty.
+pub fn report(result: anyhow::Result<()>, json: bool) -> ExitCode {
     let Err(err) = result else {
         return ExitCode::SUCCESS;
     };
@@ -97,9 +112,24 @@ pub fn report(result: anyhow::Result<()>) -> ExitCode {
         .chain()
         .find_map(|e| e.downcast_ref::<Classified>())
         .map_or(Exit::Generic, |c| c.exit);
-    match err.downcast_ref::<Classified>() {
-        Some(c) => eprintln!("Error: {:?}", c.inner),
-        None => eprintln!("Error: {err:?}"),
+    let full = match err.downcast_ref::<Classified>() {
+        Some(c) => format!("{:?}", c.inner),
+        None => format!("{err:?}"),
+    };
+    if json {
+        let message = full.lines().next().unwrap_or("unknown error").to_string();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "error": {
+                    "code": exit.code_name(),
+                    "exit_code": exit as u8,
+                    "message": message,
+                }
+            })
+        );
+    } else {
+        eprintln!("Error: {full}");
     }
     exit.into()
 }
