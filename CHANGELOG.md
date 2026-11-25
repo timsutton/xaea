@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+
+* `xaea decrypt <image.dmg.aea> --key-file <key> -o <image.dmg>` verifies and decrypts profile-1 LZFSE/SHA-256 restore images using a supplied archive key.
+
 ## 0.2.1 - 2026-11-24
 
 ### Added

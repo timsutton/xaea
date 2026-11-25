@@ -9,8 +9,8 @@ use sha2::Sha256;
 /// Every key in the AEA HMAC key tree is 32 bytes.
 pub type Key = [u8; 32];
 
-fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> Key {
-    let mut okm = [0u8; 32];
+pub fn hkdf<const N: usize>(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; N] {
+    let mut okm = [0u8; N];
     hkdf::Hkdf::<Sha256>::new(Some(salt), ikm)
         .expand(info, &mut okm)
         .expect("HKDF expand of fixed size cannot fail");
@@ -18,7 +18,7 @@ fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> Key {
 }
 
 /// `prefix || index` (little-endian), the info string of the indexed keys.
-fn indexed_info(prefix: &[u8], index: u32) -> Vec<u8> {
+pub fn indexed_info(prefix: &[u8], index: u32) -> Vec<u8> {
     [prefix, &index.to_le_bytes()].concat()
 }
 

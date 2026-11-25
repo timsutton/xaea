@@ -128,6 +128,22 @@ pub struct RootHeader {
 }
 
 impl RootHeader {
+    pub fn parse(rh: &[u8]) -> Result<Self> {
+        ensure!(rh.len() == ROOT_HEADER_LEN, "invalid root header length");
+        ensure!(
+            rh[0x1a..0x30] == [0u8; 22],
+            "root header reserved bytes are not zero — parse drift?"
+        );
+        Ok(Self {
+            original_size: u64le(rh, 0x0)?,
+            encarchive_size: u64le(rh, 0x8)?,
+            segment_size: u32le(rh, 0x10)?,
+            segments_per_cluster: u32le(rh, 0x14)?,
+            compression: rh[0x18].try_into()?,
+            checksum: rh[0x19].try_into()?,
+        })
+    }
+
     /// Length of one segment header: two u32 sizes plus the checksum.
     fn segment_header_len(&self) -> usize {
         8 + self.checksum.len()
@@ -261,18 +277,7 @@ impl<'a> Envelope<'a> {
 
         // Profile 0 data keys are HMAC-only, so the root header is plaintext.
         let rh = &file[root_off..root_off + ROOT_HEADER_LEN];
-        ensure!(
-            rh[0x1a..0x30] == [0u8; 22],
-            "root header reserved bytes are not zero — parse drift?"
-        );
-        let root = RootHeader {
-            original_size: u64le(rh, 0x0)?,
-            encarchive_size: u64le(rh, 0x8)?,
-            segment_size: u32le(rh, 0x10)?,
-            segments_per_cluster: u32le(rh, 0x14)?,
-            compression: rh[0x18].try_into()?,
-            checksum: rh[0x19].try_into()?,
-        };
+        let root = RootHeader::parse(rh)?;
         // Sanity floors only: they reject garbage headers, while still
         // admitting spec-legal small geometries (our test archive uses
         // 64 KiB segments × 2 per cluster; Apple ships 16 MiB × 256).

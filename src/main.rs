@@ -21,6 +21,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     exit::report(match &cli.cmd {
         Commands::Inspect(args) => cmd::inspect::run(args),
+        Commands::Decrypt(args) => cmd::decrypt::run(args),
         Commands::Cat(args) => cmd::cat::run(args),
         Commands::Extract(args) => cmd::extract::run(args),
         Commands::Completions(args) => {
