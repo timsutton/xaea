@@ -22,3 +22,14 @@ Rust edition, update `BUILD.bazel` to match.
 `MODULE.bazel.lock` records Bazel module resolution and the generated crate
 targets. After changing dependencies or updating Bazel or its rules, run
 `bazelisk build //:xaea` and commit any changes to this file.
+
+## Remote cache
+
+If a gRPC cache is listening on port 8980 on your machine, enable it with
+the `remote-cache` configuration in `.bazelrc`.
+
+```sh
+bazelisk build --config=remote-cache //:xaea
+```
+
+This configuration reads cached outputs and uploads results of local builds.
