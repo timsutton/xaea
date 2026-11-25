@@ -22,6 +22,8 @@ pub enum Commands {
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
     #[command(visible_alias = "x")]
     Extract(ExtractArgs),
+    /// Decrypt a profile-1 restore disk image (LZFSE and SHA-256)
+    Decrypt(DecryptArgs),
     /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
     Completions(CompletionsArgs),
     /// Write one regular file from an archive to stdout (e.g. `xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -`)
@@ -151,4 +153,16 @@ impl ExtractArgs {
             Compress::Off
         }
     }
+}
+
+#[derive(Args)]
+pub struct DecryptArgs {
+    /// Local .dmg.aea member from a restore IPSW, or - for stdin
+    pub file: PathBuf,
+    /// File containing a raw 32-byte key or the base64: line from ipsw fw aea --key
+    #[arg(long)]
+    pub key_file: PathBuf,
+    /// Destination disk image (must be a new file)
+    #[arg(short, long)]
+    pub output: PathBuf,
 }
