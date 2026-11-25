@@ -42,6 +42,23 @@ thing on a GitHub macOS runner and publishes nothing.
 
 ## What a real release adds
 
-Pushing a `vX.Y.Z` tag runs the same config without `--snapshot`, plus the
-`GITHUB_TOKEN` needed to create the GitHub Release. Don't do that locally;
-see "Releasing" in the README.
+Pushing a `vX.Y.Z` tag runs the same config without `--snapshot`, signed and
+notarized, and uploads the assets to a draft GitHub Release. A second job then
+attests their build provenance, attaches it as
+`xaea_<version>_provenance.intoto.jsonl` and publishes the release. If that job
+fails, re-run it; the release stays a draft until it succeeds. If the build job
+fails after uploading assets, delete the draft before re-running it.
+
+Don't do any of that locally; the header of
+`.github/workflows/release.yml` describes how to cut a release.
+
+## Verifying provenance
+
+Any release archive, the checksums file, or an extracted `xaea` binary:
+
+```sh
+gh attestation verify xaea_<version>_linux_amd64.tar.gz --repo timsutton/xaea
+```
+
+Add `--bundle xaea_<version>_provenance.intoto.jsonl` to check against the
+attached bundle instead of fetching the attestation from GitHub.

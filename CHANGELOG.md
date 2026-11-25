@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+
+* Releases publish signed SLSA build provenance for the archives, checksums file
+  and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
+
 ## 0.2.1 - 2026-11-24
 
 ### Added
