@@ -31,6 +31,12 @@
       "description": "Automerge patch and digest bumps once CI is green",
       "matchUpdateTypes": ["patch", "digest"],
       "automerge": true
+    },
+    {
+      "description": "Cargo deps use caret ranges, so in-range minor and patch bumps are already applied to Cargo.lock by monthly lock file maintenance; skip the duplicate per-crate PRs. Out-of-range updates (major, including 0.x minor bumps) still get PRs, and security fixes from vulnerability alerts bypass this rule",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "enabled": false
     }
   ],
   "vulnerabilityAlerts": {
