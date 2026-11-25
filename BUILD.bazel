@@ -9,11 +9,6 @@ platform(
         "@platforms//cpu:aarch64",
         "@platforms//os:linux",
     ],
-    exec_properties = {
-        "ISA": "aarch64",
-        "OSFamily": "linux",
-        "pool": "ubuntu24-04-v2",
-    },
 )
 
 cargo_toml_env_vars(

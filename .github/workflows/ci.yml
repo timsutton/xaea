@@ -64,6 +64,18 @@ jobs:
       # locally with AEA_FIXTURE=… cargo test -- --ignored.
       - run: cargo test --locked
 
+  bazel:
+    name: Bazel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: bazelisk build //:xaea
+      - run: bazelisk test --test_output=errors //:tests
+
   linux-docker:
     name: Linux Docker image
     runs-on: ubuntu-latest
