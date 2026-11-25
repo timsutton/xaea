@@ -98,15 +98,11 @@ pub struct ExtractArgs {
     /// OS-provided library; macOS only)
     #[arg(long, value_enum, default_value_t = XzDecoder::LzmaTurbo)]
     pub decoder: XzDecoder,
-    /// Store files with transparent APFS compression, as Apple's
-    /// `archiveutil` does (an Xcode tree takes ~3.9 GiB on disk instead
-    /// of ~10 GiB). The default on macOS; on a volume that can't hold
-    /// compressed files, extraction quietly writes plain files instead
-    /// (with this flag given explicitly, it warns).
+    /// Store files using APFS compression (default on macOS)
     #[arg(long, overrides_with = "no_compress")]
     pub compress: bool,
-    /// Write plain, uncompressed files (faster: ~8 s instead of ~12 s
-    /// for an Xcode archive on M3 Max, at 2.6× the disk space)
+    /// Skip APFS file compression for speed, using roughly 3x the disk
+    /// space (default on Linux)
     #[arg(long, overrides_with = "compress")]
     pub no_compress: bool,
 }

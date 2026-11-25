@@ -12,7 +12,8 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+# `wrap_help`: wrap help at the terminal width, indented under the help text.
+clap = { version = "4", features = ["derive", "wrap_help"] }
 # `xaea completions <shell>`: AOT generators only (default features), so the
 # dependency is clap itself plus the script templates. Normal dep, not a
 # feature: releases ship a bare binary, and completions must be generatable
