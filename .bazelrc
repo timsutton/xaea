@@ -9,5 +9,4 @@ build:remote_exec --remote_default_exec_properties=pool=ubuntu24-04-v2
 build:remote_exec --platforms=//:remote_linux_arm64
 build:remote_exec --extra_execution_platforms=//:remote_linux_arm64
 build:remote_exec --extra_toolchains=@llvm//toolchain:linux_aarch64_to_linux_aarch64
-build:remote_exec --experimental_platform_in_output_dir
 build:remote_exec --symlink_prefix=bazel-linux-
