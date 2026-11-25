@@ -1,0 +1,47 @@
+name: Links
+
+# Checks the links in the Markdown files with lychee, in two parts: local
+# links and their #anchors on every change, and web URLs on a schedule, so a
+# third-party outage can't block a merge.
+#
+# To reproduce locally:
+#   lychee --offline --include-fragments './**/*.md'
+#   lychee './**/*.md'
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 9 * * 1" # Mondays, 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local:
+    name: Local links
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: --offline --include-fragments --no-progress './**/*.md'
+
+  web:
+    name: Web links
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # No --include-fragments: some pages (Apple's developer docs) build
+      # their anchors with JavaScript, so valid ones are reported missing.
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: -v --no-progress './**/*.md' # -v lists the redirects
