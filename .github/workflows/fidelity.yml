@@ -1,0 +1,162 @@
+name: fidelity
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      fixture_url:
+        description: Signed URL for the .aea fixture (overrides AEA_FIXTURE_URL)
+        required: false
+        type: string
+
+# Only one fidelity run at a time; each run moves ~14 GiB through the runner.
+concurrency:
+  group: fidelity
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FIXTURE_SHA256: 1d685d5c6b843a8ca46d34cf38134b72118af8caf28d9b5cfc0f91df4f2bfe64
+
+jobs:
+  fidelity:
+    name: Extract fidelity (macOS)
+    # The oracle (Apple's archiveutil) and codesign are macOS-only, and the
+    # fixture is an Xcode distribution. Scheduled runs on forks have no access
+    # to the fixture secret, so skip there rather than fail; a fork can still
+    # dispatch manually with the fixture_url input.
+    if: github.event_name != 'schedule' || github.repository == 'timsutton/xaea'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e1d2f3865e076b5708fb8506d98388b06c13ca # v7
+        with:
+          persist-credentials: false
+
+      - name: Download fixture
+        uses: actions/cache@55cc83454a0a13bac147d80daf62de484c01a2c3 # v6
+        id: fixture
+        with:
+          path: fixture-cache
+          key: aea-fixture-${{ env.FIXTURE_SHA256 }}
+          restore-keys: aea-fixture-
+          enableCrossOsArchive: false
+
+      - name: Fetch fixture
+        if: steps.fixture.outputs.cache-hit != 'true'
+        env:
+          AEA_FIXTURE_URL: ${{ inputs.fixture_url || secrets.AEA_FIXTURE_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AEA_FIXTURE_URL:-}" ]]; then
+            echo "::error::No fixture URL: provide the fixture_url input or the AEA_FIXTURE_URL secret."
+            exit 1
+          fi
+          mkdir -p fixture-cache
+          curl -fsSL --retry 3 -o fixture-cache/fixture.aea "$AEA_FIXTURE_URL"
+          echo "$FIXTURE_SHA256  fixture-cache/fixture.aea" | shasum -a 256 -c -
+
+      - name: Resolve fixture
+        id: fixture-path
+        run: |
+          set -euo pipefail
+          FIXTURE=$(ls fixture-cache/*.aea 2>/dev/null | head -1)
+          if [[ -z "$FIXTURE" ]]; then
+            echo "::error::No .aea found in fixture-cache."
+            exit 1
+          fi
+          echo "path=$FIXTURE" >> "$GITHUB_OUTPUT"
+
+      - name: Build release
+        uses: dtolnay/rust-toolchain@e08b8fd978020cca660293314ef8e45f700d28a5 # stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@f68edc8c45aa73aa9b7130819043037834df786c # v2
+      - name: cargo build --release
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Detect oracle tool
+        id: oracle
+        run: |
+          set -euo pipefail
+          if command -v archiveutil >/dev/null 2>&1 && \
+             archiveutil 2>&1 | grep -q extractXcodeAEA; then
+            echo "tool=archiveutil" >> "$GITHUB_OUTPUT"
+          elif command -v unxip >/dev/null 2>&1; then
+            echo "tool=unxip" >> "$GITHUB_OUTPUT"
+          else
+            echo "tool=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::No AEA oracle extractor (archiveutil extractXcodeAEA or unxip) on this runner; tree comparison skipped."
+          fi
+
+      # A GitHub macOS runner cannot hold the fixture and two extracted trees
+      # at once (~17.5 GiB against a ~14 GiB budget), so the comparison goes
+      # through manifests: extract the oracle, hash it to a manifest, delete
+      # the tree, then extract with xaea and compare against the manifest.
+      # Peak stays at fixture + one tree (~13.6 GiB).
+      - name: Extract oracle tree
+        if: steps.oracle.outputs.tool != 'none'
+        run: |
+          set -euo pipefail
+          bash scripts/extract-oracle.sh '${{ steps.fixture-path.outputs.path }}' "$RUNNER_TEMP/oracle-path.txt"
+
+      # Both manifests are hashed from the tree root (the directory *holding*
+      # the .app) so the relative paths line up on both sides.
+      - name: Hash oracle tree
+        if: steps.oracle.outputs.tool != 'none'
+        run: |
+          set -euo pipefail
+          ORACLE=$(cat "$RUNNER_TEMP/oracle-path.txt")
+          bash scripts/verify.sh --hash "$(dirname "$ORACLE")" "$RUNNER_TEMP/oracle.sha"
+          wc -l < "$RUNNER_TEMP/oracle.sha" | xargs echo "oracle manifest entries:"
+
+      - name: Free oracle tree
+        if: steps.oracle.outputs.tool != 'none'
+        run: rm -rf "$(dirname "$(cat "$RUNNER_TEMP/oracle-path.txt")")"
+
+      - name: Extract with xaea
+        run: |
+          set -euo pipefail
+          ./target/aarch64-apple-darwin/release/xaea extract \
+            '${{ steps.fixture-path.outputs.path }}' "$RUNNER_TEMP/xaea"
+
+      - name: Compare against oracle
+        if: steps.oracle.outputs.tool != 'none'
+        run: |
+          set -euo pipefail
+          bash scripts/verify.sh --hash "$RUNNER_TEMP/xaea" "$RUNNER_TEMP/xaea.sha"
+          bash scripts/verify.sh --compare "$RUNNER_TEMP/xaea.sha" "$RUNNER_TEMP/oracle.sha"
+
+      - name: Codesign verification
+        run: |
+          set -euo pipefail
+          APP=$(find "$RUNNER_TEMP/xaea" -maxdepth 2 -name '*.app' | head -1)
+          if [[ -z "$APP" ]]; then
+            echo "::error::No .app bundle in the extracted tree."
+            exit 1
+          fi
+          echo "codesign --verify --deep --strict: $APP"
+          if codesign --verify --deep --strict "$APP"; then
+            echo passed > "$RUNNER_TEMP/codesign-result.txt"
+          else
+            echo FAILED > "$RUNNER_TEMP/codesign-result.txt"
+            exit 1
+          fi
+
+      - name: Step summary
+        if: always()
+        run: |
+          {
+            echo "## Extraction fidelity"
+            echo
+            echo "- Oracle tool: \`${{ steps.oracle.outputs.tool || 'unknown' }}\`"
+            if [[ '${{ steps.oracle.outputs.tool }}' == 'none' ]]; then
+              echo "- Tree comparison: skipped (no oracle extractor on this runner)."
+            else
+              echo "- Tree comparison: hash-for-hash against the oracle tree (see Compare against oracle step)."
+            fi
+            echo "- \`codesign --verify --deep --strict\`: \`$(cat "$RUNNER_TEMP/codesign-result.txt" 2>/dev/null || echo 'not run')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
