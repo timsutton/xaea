@@ -1,6 +1,5 @@
 build:remote_cache --remote_cache=grpc://localhost:8980
 
-build:remote_exec --config=remote_cache
 build:remote_exec --remote_executor=grpc://localhost:8980
 build:remote_exec --remote_instance_name=homelab
 build:remote_exec --remote_default_exec_properties=ISA=aarch64
