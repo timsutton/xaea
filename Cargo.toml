@@ -24,7 +24,7 @@ sha2 = "0.11"
 hmac = "0.13"
 hkdf = "0.13"
 x509-parser = "0.18"
-p256 = { version = "0.14", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdh", "ecdsa", "pem", "pkcs8"] }
 p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
 # Vendored xz-utils (5.8.x), statically linked, behind `--decoder liblzma`; we
@@ -44,6 +44,16 @@ rsa = { version = "0.10", default-features = false, features = [
 ] }
 serde_json = "1"
 tempfile = "3"
+# AES-256-CTR: the cipher of encrypting (profile 1) archives.
+aes = "0.9"
+ctr = "0.10"
+# AES-256-GCM for the HPKE key unwrap of restore-image (WKMS) archives.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+
+# LZFSE segments (restore images): pure Rust off macOS; macOS uses the
+# OS's libcompression, which decodes them faster.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+lzfse_rust = "0.2"
 
 [features]
 # Pipeline timing probes (XAEA_STATS breakdown, XAEA_TL timeline, XAEA_DQ/XAEA_WQ
@@ -53,6 +63,8 @@ profile = []
 [dev-dependencies]
 # Unit tests only: builds .xz streams to feed the decoder.
 liblzma = { version = "0.4", features = ["static"] }
+# Unit tests only: builds LZFSE segments to feed the decoder.
+lzfse_rust = "0.2"
 
 [profile.release]
 lto = true

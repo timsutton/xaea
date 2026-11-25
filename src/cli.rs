@@ -22,6 +22,10 @@ pub enum Commands {
     /// Extract an AEA's payload (e.g. `Xcode.app`) into a directory
     #[command(visible_alias = "x")]
     Extract(ExtractArgs),
+    /// Write an AEA's whole payload to one file, decrypting it if needed
+    /// (e.g. a restore image's `.dmg.aea` to its `.dmg`)
+    #[command(visible_alias = "d")]
+    Decrypt(DecryptArgs),
     /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
     Completions(CompletionsArgs),
     /// Write one regular file from an archive to stdout (e.g. `xaea cat Xcode.aea Xcode.app/Contents/Info.plist | plutil -p -`)
@@ -45,6 +49,8 @@ pub struct InspectArgs {
     /// Skip the full checksum pass when used with --verify
     #[arg(long)]
     pub no_checksums: bool,
+    #[command(flatten)]
+    pub key: KeyArgs,
     /// LZMA decoder: `lzma-turbo` (Rust port of 7-Zip's decoder, the
     /// default), `liblzma` (vendored xz-utils) or `libcompression` (Apple's
     /// OS-provided library; macOS only)
@@ -126,6 +132,46 @@ pub struct CatArgs {
     /// LZMA decoder: `lzma-turbo` (Rust port of 7-Zip's decoder, the
     /// default), `liblzma` (vendored xz-utils) or `libcompression` (Apple's
     /// OS-provided library; macOS only)
+    #[arg(long, value_enum, default_value_t = XzDecoder::LzmaTurbo)]
+    pub decoder: XzDecoder,
+}
+
+/// How to obtain the key of an encrypted archive (restore images use
+/// profile 1). Neither is needed for unencrypted (profile 0) archives.
+#[derive(Args)]
+pub struct KeyArgs {
+    /// Key of an encrypted archive: `base64:…`, `hex:…`, or bare base64
+    /// or 64 hex digits (32 bytes)
+    #[arg(long, value_name = "KEY", conflicts_with = "key_pem")]
+    pub key: Option<String>,
+    /// Private-key PEM that unwraps the archive's own key: the file served
+    /// at the archive's `com.apple.wkms.fcs-key-url` (`inspect` shows it;
+    /// fetch it with e.g. `curl -L <url> -o key.pem`)
+    #[arg(long, value_name = "FILE")]
+    pub key_pem: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct DecryptArgs {
+    /// Archive path; `-` reads the archive from standard input
+    pub file: PathBuf,
+    /// Output file (default: the archive's name without `.aea`, in the
+    /// current directory). Never overwritten if it exists.
+    pub out: Option<PathBuf>,
+    #[command(flatten)]
+    pub key: KeyArgs,
+    /// Machine-readable summary
+    #[arg(long)]
+    pub json: bool,
+    /// Skip all integrity checks (signature, MACs, checksums). Only for
+    /// trusted or damaged archives. Verification is on by default.
+    #[arg(long)]
+    pub no_verify: bool,
+    /// Decoder threads (default: all cores)
+    #[arg(short, long)]
+    pub jobs: Option<usize>,
+    /// LZMA decoder, for LZMA-compressed archives: `lzma-turbo` (the
+    /// default), `liblzma` or `libcompression` (macOS only)
     #[arg(long, value_enum, default_value_t = XzDecoder::LzmaTurbo)]
     pub decoder: XzDecoder,
 }

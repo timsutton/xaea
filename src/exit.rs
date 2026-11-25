@@ -24,7 +24,8 @@ pub enum Exit {
     Unreadable = 3,
     /// 4 — the archive was read but rejected: bad magic, truncated or
     /// malformed envelope, bad geometry, or a valid archive this command
-    /// cannot process (encrypted profile with `extract`).
+    /// cannot process (unsupported profile; an encrypted archive's disk
+    /// image with `extract` or `cat`).
     Rejected = 4,
     /// 5 — integrity/authenticity verification failed (`inspect --verify`:
     /// content signature, certificate chain, MACs, checksums).
@@ -33,6 +34,10 @@ pub enum Exit {
     /// and verification failures detected mid-extract (the streaming
     /// extractor folds those together; use `inspect --verify` for code 5).
     Extraction = 6,
+    /// 7 — key failure: an encrypted archive was given no key, a malformed
+    /// one, or one that does not open it (wrong `--key`, or a `--key-pem`
+    /// that cannot be read or does not unwrap the archive's key).
+    Key = 7,
 }
 
 impl From<Exit> for ExitCode {

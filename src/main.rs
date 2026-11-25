@@ -7,9 +7,11 @@ mod envelope;
 mod exit;
 mod extract;
 mod kdf;
+mod payload;
 mod prof;
 mod sigverify;
 mod spool;
+mod wkms;
 mod xz;
 
 use clap::Parser;
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
         Commands::Inspect(args) => cmd::inspect::run(args),
         Commands::Cat(args) => cmd::cat::run(args),
         Commands::Extract(args) => cmd::extract::run(args),
+        Commands::Decrypt(args) => cmd::decrypt::run(args),
         Commands::Completions(args) => {
             completions::print(args.shell);
             Ok(())
