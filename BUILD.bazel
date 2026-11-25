@@ -51,6 +51,7 @@ rust_test(
 py_binary(
     name = "make_test_aea",
     srcs = ["scripts/make_test_aea.py"],
+    legacy_create_init = 0,
     main = "scripts/make_test_aea.py",
     deps = ["@test_python_deps//cryptography"],
 )

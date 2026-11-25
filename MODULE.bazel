@@ -1,22 +1,31 @@
 module(name = "xaea")
 
 bazel_dep(name = "rules_rust", version = "0.75.0")
-bazel_dep(name = "rules_python", version = "1.9.2")
+bazel_dep(name = "rules_python", version = "2.5.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
 
+PYTHON_VERSION = "3.15"
+
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(python_version = "3.12")
+python.defaults(python_version = PYTHON_VERSION)
+python.toolchain(python_version = PYTHON_VERSION)
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
     download_only = True,
     experimental_index_url = "https://pypi.org/simple/",
     hub_name = "test_python_deps",
-    python_version = "3.12",
+    python_version = PYTHON_VERSION,
     requirements_by_platform = {
         "//:scripts/bazel-test-requirements.lock": "linux_*,osx_*",
     },
+    target_platforms = [
+        "linux_aarch64",
+        "linux_x86_64",
+        "osx_aarch64",
+        "osx_x86_64",
+    ],
 )
 use_repo(pip, "test_python_deps")
 
