@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Bazelisk sets BAZEL_REAL to the binary selected for this checkout.
+exec "${BAZEL_REAL:?Run bazel with Bazelisk on PATH}" "$@"

@@ -1,6 +1,18 @@
 module(name = "xaea")
 
 bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "rules_python", version = "1.7.0")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "test_python_deps",
+    python_version = "3.12",
+    requirements_lock = "//:scripts/bazel-test-requirements.lock",
+)
+use_repo(pip, "test_python_deps")
 
 # Match the Rust version used by Cargo CI.
 RUST_VERSION = "1.100.0"

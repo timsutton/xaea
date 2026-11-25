@@ -1,6 +1,7 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test", "rust_test_suite")
 
 cargo_toml_env_vars(
     name = "package_env",
@@ -20,4 +21,61 @@ rust_binary(
         normal = True,
         proc_macro = False,
     ),
+)
+
+rust_test(
+    name = "unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":xaea",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+py_binary(
+    name = "make_test_aea",
+    srcs = ["scripts/make_test_aea.py"],
+    main = "scripts/make_test_aea.py",
+    deps = ["@test_python_deps//cryptography"],
+)
+
+rust_test_suite(
+    name = "integration_tests",
+    size = "small",
+    srcs = glob(["tests/*.rs"]),
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    data = [
+        ":make_test_aea",
+        ":xaea",
+    ],
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {
+        "CARGO_BIN_EXE_xaea": "./$(rootpath :xaea)",
+        "XAEA_TEST_AEA_BUILDER": "./$(rootpath :make_test_aea)",
+    },
+    shared_srcs = glob(["tests/common/**/*.rs"]),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":integration_tests",
+        ":unit_test",
+    ],
 )
