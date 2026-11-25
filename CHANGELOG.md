@@ -7,6 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* Build `xaea` with `bazelisk build //:xaea` using the existing Cargo manifest
+  and lockfile. See [Building with Bazel](doc/BUILDING-WITH-BAZEL.md).
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
 

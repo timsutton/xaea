@@ -1,0 +1,35 @@
+module(name = "xaea")
+
+bazel_dep(name = "rules_rust", version = "0.75.0")
+
+# Match the Rust version used by Cargo CI.
+RUST_VERSION = "1.100.0"
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(versions = [RUST_VERSION])
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+host_tools = use_extension("@rules_rust//rust:extensions.bzl", "rust_host_tools")
+host_tools.host_tools(
+    name = "xaea_host_tools",
+    version = RUST_VERSION,
+)
+use_repo(host_tools, "xaea_host_tools")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    host_tools = "@xaea_host_tools//:rust_host_tools",
+    manifests = ["//:Cargo.toml"],
+    skip_cargo_lockfile_overwrite = True,
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates")

@@ -1,0 +1,23 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+cargo_toml_env_vars(
+    name = "package_env",
+    src = "Cargo.toml",
+)
+
+rust_binary(
+    name = "xaea",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    compile_data = ["assets/AppleRootCA.pem"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":package_env"],
+    deps = all_crate_deps(
+        normal = True,
+        proc_macro = False,
+    ),
+)
