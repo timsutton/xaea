@@ -5,6 +5,6 @@ build:remote_exec --remote_executor=grpc://localhost:8980
 build:remote_exec --remote_instance_name=homelab
 build:remote_exec --platforms=//:remote_linux_arm64
 build:remote_exec --extra_execution_platforms=//:remote_linux_arm64
-build:remote_exec --extra_toolchains=//tools/toolchains:worker_gcc
+build:remote_exec --extra_toolchains=@llvm//toolchain:linux_aarch64_to_linux_aarch64
 build:remote_exec --experimental_platform_in_output_dir
 build:remote_exec --symlink_prefix=bazel-linux-

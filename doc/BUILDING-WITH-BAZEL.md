@@ -50,7 +50,8 @@ This configuration reads cached outputs and uploads results of local builds.
 The `remote_exec` configuration uses the Buildbarn `homelab` instance and
 routes actions to the `ubuntu24-04-v2` Linux Arm64 worker pool. Bazel selects
 Linux Arm64 as both the execution and target platform, including when the
-client runs on macOS. The workers provide GCC 13 and binutils.
+client runs on macOS. The profile uses the `llvm` module's hermetic toolchain
+for C compilation and linking.
 
 ```sh
 bazel build --config=remote_exec //:xaea

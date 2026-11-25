@@ -4,6 +4,7 @@ bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "rules_python", version = "2.5.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.25")
+bazel_dep(name = "llvm", version = "0.8.27")
 
 PYTHON_VERSION = "3.15"
 
