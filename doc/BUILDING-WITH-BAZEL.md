@@ -33,3 +33,24 @@ bazelisk build --config=remote-cache //:xaea
 ```
 
 This configuration reads cached outputs and uploads results of local builds.
+
+## Remote execution
+
+The `remote-exec` configuration uses the Buildbarn `homelab` instance and
+routes actions to the `ubuntu24-04-v2` Linux Arm64 worker pool. Run it from a
+Linux Arm64 Bazel client with the worker's C toolchain environment. This builds
+a Linux Arm64 binary.
+
+```sh
+bazelisk build --config=remote-exec //:xaea
+```
+
+On macOS, run the client in a Linux Arm64 Docker container with the same
+toolchain as the workers. If Buildbarn listens on the Docker Desktop host,
+point both endpoints at the host from the container.
+
+```sh
+bazelisk build --config=remote-exec \
+  --remote_cache=grpc://host.docker.internal:8980 \
+  --remote_executor=grpc://host.docker.internal:8980 //:xaea
+```
