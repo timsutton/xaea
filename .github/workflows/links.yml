@@ -44,4 +44,4 @@ jobs:
       # their anchors with JavaScript, so valid ones are reported missing.
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: --no-progress './**/*.md'
+          args: -v --no-progress './**/*.md' # -v lists the redirects
