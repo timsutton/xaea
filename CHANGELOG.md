@@ -14,6 +14,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   lzma-turbo crate (a Rust port of 7-Zip's LZMA decoder), ~20% less decode CPU
   than liblzma on Apple Silicon. `--decoder liblzma` selects the previous default.
 
+### Changed
+
+* Shortened the `extract --help` text for `--compress` and `--no-compress`.
+
 ## 0.2.0 - 2026-11-22
 
 ### Added
