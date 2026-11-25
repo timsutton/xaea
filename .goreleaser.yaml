@@ -61,6 +61,12 @@ notarize:
         wait: true
         timeout: 20m
 
+# Left as a draft: the release workflow's provenance job publishes it once the
+# build provenance is attached. A re-run reuses the draft instead of adding one.
+release:
+  draft: true
+  use_existing_draft: true
+
 archives:
   - # Default name template (xaea_<version>_<os>_<arch>.tar.gz) except that the
     # lipo-merged macOS binary is "universal" rather than GoReleaser's "all".

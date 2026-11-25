@@ -4,15 +4,16 @@ name: Release
 # (macOS as one universal binary; Linux x86_64 / aarch64). The macOS binary is
 # Developer ID-signed and notarized (see `notarize` in .goreleaser.yaml;
 # secrets listed below). Everything builds on one macOS runner: the
-# darwin targets natively, the Linux ones zig-cross-linked.
+# darwin targets natively, the Linux ones zig-cross-linked. A second job then
+# attests the build provenance of what was uploaded and publishes the release.
 #
 # To cut a release: bump `version` in Cargo.toml, commit, then
 # `git tag vX.Y.Z && git push origin vX.Y.Z`. The release is refused unless
 # the tag matches the version in Cargo.toml and Cargo.lock.
 #
 # The whole build — tool installation, tag verification, release notes,
-# GoReleaser, signature verification — lives in scripts/release.sh; this
-# workflow only checks out the tree, installs the Rust toolchain and caches.
+# GoReleaser, signature verification — lives in scripts/release.sh; the build
+# job only checks out the tree, installs the Rust toolchain and caches.
 
 on:
   push:
@@ -36,12 +37,12 @@ env:
 
 jobs:
   release:
-    name: Build & publish
+    name: Build & upload
     # macOS targets build natively with cargo (Apple SDK, both archs); the
     # Linux assets are zig-cross-linked from this runner via cargo-zigbuild.
     runs-on: macos-latest
     permissions:
-      contents: write # goreleaser creates the GitHub Release
+      contents: write # goreleaser creates the draft GitHub Release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -62,3 +63,55 @@ jobs:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
         run: scripts/release.sh
+
+  # Signs SLSA build provenance for the release assets and the binaries inside
+  # them, attaches the Sigstore bundle to the release, and only then publishes
+  # it, so no release goes public without provenance. A separate job so that
+  # nothing run during the build (brew, cargo build scripts) can mint the OIDC
+  # token that signs attestations. Safe to re-run if it fails.
+  provenance:
+    name: Attest & publish
+    needs: release
+    if: ${{ !inputs.snapshot }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # read the draft release, upload to it and publish it
+      id-token: write # Sigstore signing certificate
+      attestations: write # store the attestation on the repository
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download release assets
+        run: |
+          gh release download "$TAG" --dir assets \
+            --pattern '*.tar.gz' --pattern '*_checksums.txt'
+          (cd assets && sha256sum --check --strict ./*_checksums.txt)
+      - name: Unpack binaries
+        run: |
+          for archive in assets/*.tar.gz; do
+            dir="binaries/$(basename "$archive" .tar.gz)"
+            mkdir -p "$dir"
+            tar -xzf "$archive" -C "$dir" xaea
+          done
+      - id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            assets/*.tar.gz
+            assets/*_checksums.txt
+            binaries/*/xaea
+      - name: Attach provenance and publish
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          provenance="xaea_${TAG#v}_provenance.intoto.jsonl"
+          cp "$BUNDLE" "$provenance"
+          for subject in assets/* binaries/*/xaea; do
+            gh attestation verify "$subject" --bundle "$provenance" \
+              --repo "$GH_REPO" --source-ref "refs/tags/$TAG" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml"
+          done
+          gh release upload "$TAG" "$provenance" --clobber
+          gh release edit "$TAG" --draft=false
