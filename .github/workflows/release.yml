@@ -1,7 +1,8 @@
 name: Release
 
 # Publishes a GitHub Release with prebuilt macOS and Linux binaries
-# (macOS as one universal binary; Linux x86_64 / aarch64). The macOS binary is
+# (macOS as one universal binary; Linux x86_64 / aarch64, each as a glibc and
+# a static musl build). The macOS binary is
 # Developer ID-signed and notarized (see `notarize` in .goreleaser.yaml;
 # secrets listed below). Everything builds on one macOS runner: the
 # darwin targets natively, the Linux ones zig-cross-linked.
@@ -50,7 +51,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           # Both Apple targets (the runner is arm64) plus the Linux ones.
-          targets: x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          targets: x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Release
         env:

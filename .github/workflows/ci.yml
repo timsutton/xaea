@@ -47,7 +47,7 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}${{ matrix.target && ', musl' || '' }})
     runs-on: ${{ matrix.os }}
     # The synthetic-AEA tests skip when python3/`cryptography` is missing,
     # which would silently un-test the corrupt-signature rejection paths.
@@ -57,13 +57,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # musl-gcc compiles the vendored C (liblzma) for the musl target.
+      - name: Set up the musl build
+        if: matrix.target
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
       # The real Xcode fixture isn't in the repo, so the tests that need it
       # are #[ignore]d and stay skipped here. See README for running them
       # locally with AEA_FIXTURE=… cargo test -- --ignored.

@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+### Added
+
+* Releases include statically linked musl builds for Linux
+  (`linux_amd64_musl`, `linux_arm64_musl`), which run on Alpine and other
+  distributions without glibc.
+
 ## 0.2.1 - 2026-11-24
 
 ### Added
