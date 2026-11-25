@@ -6,13 +6,17 @@ mod decmpfs;
 mod envelope;
 mod exit;
 mod extract;
+mod ipsw;
 mod kdf;
+mod net;
 mod payload;
 mod prof;
 mod sigverify;
 mod spool;
+mod stream;
 mod wkms;
 mod xz;
+mod zip;
 
 use clap::Parser;
 use cli::{Cli, Commands};

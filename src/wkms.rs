@@ -13,8 +13,8 @@
 //! * The URL's last path component is `base64url(SHA-256(public point))`
 //!   of that key pair, so a supplied PEM can be matched to the archive.
 //!
-//! xaea makes no network requests: the PEM is fetched by the user (e.g.
-//! `curl -L <url>`) and handed over with `--key-pem`.
+//! xaea fetches the PEM itself (`net::fetch_key_pem`, only from Apple's
+//! hosts) unless given `--key`, `--key-pem` or `--offline`.
 
 use crate::kdf::Key;
 use crate::sigverify::base64_decode;

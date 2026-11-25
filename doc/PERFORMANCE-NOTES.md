@@ -831,8 +831,28 @@ Result: 0.90–1.18 s for xaea verifying (0.87–0.88 s with `--no-verify`)
 vs 0.88–1.00 s for `aea decrypt`, down from 1.5–2.2 s for the first
 version; output byte-identical. The remaining
 headroom on a local file is ≈0: it is the cost of writing the image.
-The big win left is upstream: decrypting while downloading only the
-wanted `.dmg.aea` out of a remote IPSW.
+
+### From a URL (`xaea decrypt <ipsw-url> <member>`)
+
+The member is read front to back with HTTP range requests of 8 MiB, 4 in
+flight (`--connections`), and segments go to the same worker/writer
+pipeline as they arrive, so the image is done when the download is: no
+`.aea` is saved, and verification costs nothing extra in wall time. Every
+MAC is checked as its bytes come in (cluster headers before their
+segments, the padding last), and the output appears only after all pass.
+
+Same iPhone17,3 IPSW, same machine (busy), over a link that `curl` pulls
+at ~70–95 MB/s:
+
+| member | `curl -r` of the member to /dev/null | `xaea decrypt` from the URL |
+|---|---|---|
+| exclave-os, 504 MiB → 600 MiB | 5.6–7.1 s | 6.3–9.0 s (4 connections), 6.3–6.5 s (8) |
+| system-cryptex, 2.25 GiB → 5.88 GiB | 46 s | 61 s (one run; the link varied) |
+
+xaea's time includes the key fetch and the zip directory reads (a few
+round trips). 1, 4 and 8 connections were within noise of each other and
+16 was slower: on this link one connection already saturates it, and the
+parallel requests are there for CDNs that cap each connection.
 
 ## Re-measuring
 

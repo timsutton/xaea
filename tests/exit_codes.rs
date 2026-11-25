@@ -280,21 +280,35 @@ fn key_failures_exit_7() {
     let out = dir.join("out.bin");
     let out = out.to_str().unwrap();
     let wrong = format!("hex:{}", "00".repeat(32));
-    assert_eq!(code(&["decrypt", aea, out]), 7, "no key");
+    assert_eq!(code(&["decrypt", aea, "-o", out, "--offline"]), 7, "no key");
     assert_eq!(
-        code(&["decrypt", aea, out, "--key", &wrong]),
+        code(&["decrypt", aea, "-o", out, "--key", &wrong]),
         7,
         "wrong key"
     );
     let other = dir.join("p1-other.pem");
     assert_eq!(
-        code(&["decrypt", aea, out, "--key-pem", other.to_str().unwrap()]),
+        code(&[
+            "decrypt",
+            aea,
+            "-o",
+            out,
+            "--key-pem",
+            other.to_str().unwrap()
+        ]),
         7,
         "PEM that does not unwrap the key"
     );
     let good = dir.join("p1-key.pem");
     assert_eq!(
-        code(&["decrypt", aea, out, "--key-pem", good.to_str().unwrap()]),
+        code(&[
+            "decrypt",
+            aea,
+            "-o",
+            out,
+            "--key-pem",
+            good.to_str().unwrap()
+        ]),
         0,
         "the right PEM"
     );

@@ -1,11 +1,11 @@
 //! `xaea inspect`: describe an archive and, with `--verify`, check it.
 
-use super::{archive_key, human, open_archive, parse_envelope};
+use super::{Input, archive_key, human, image_listing, input_exit, parse_envelope};
 use crate::cli::InspectArgs;
 use crate::envelope::{Envelope, Prelude};
 use crate::exit::{Exit, WithExit, bail_exit};
 use crate::sigverify::{self, ParsedCert};
-use crate::wkms;
+use crate::{ipsw, wkms, zip};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::time::Instant;
@@ -23,7 +23,17 @@ struct Verification {
 
 pub fn run(args: &InspectArgs) -> Result<()> {
     args.decoder.check_available().with_exit(Exit::Usage)?;
-    let archive = open_archive(&args.file)?;
+    let input = Input::open(&args.file.to_string_lossy(), args.key.offline)?;
+    if input.is_zip()? {
+        return list_ipsw(args, &input);
+    }
+    let Input::Local(archive) = input else {
+        bail_exit!(
+            Exit::Usage,
+            "inspect reads remote IPSWs (to list their disk images) but not remote archives: \
+             download it, or decrypt it straight from the URL"
+        );
+    };
     let file = &archive.map[..];
     let prelude = Prelude::parse(file).with_exit(Exit::Rejected)?;
     if prelude.profile.encrypted() && !args.verify && archive_key(&args.key, &prelude)?.is_none() {
@@ -118,6 +128,38 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     Ok(())
 }
 
+/// `inspect` of an IPSW: its disk images and their roles.
+fn list_ipsw(args: &InspectArgs, input: &Input) -> Result<()> {
+    let entries = zip::entries(input.read_at()).map_err(input_exit)?;
+    let listing = ipsw::list(input.read_at(), &entries).map_err(input_exit)?;
+    if !args.json {
+        print!("{}", image_listing(&input.label(), &listing));
+        return Ok(());
+    }
+    let images: Vec<Value> = listing
+        .images
+        .iter()
+        .map(|i| {
+            json!({
+                "member": i.entry.name,
+                "roles": i.roles,
+                "size": i.entry.size,
+                "encrypted": i.encrypted(),
+            })
+        })
+        .collect();
+    let summary = json!({
+        "file": input.label(),
+        "format": "IPSW",
+        "product_version": listing.product_version,
+        "build": listing.build,
+        "devices": listing.devices,
+        "images": images,
+    });
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
 fn print_auth(auth: &[(String, Vec<u8>)]) {
     for (k, v) in auth {
         println!("  auth: {k} ({} bytes)", v.len());
@@ -153,7 +195,7 @@ fn describe_locked(args: &InspectArgs, label: &str, size: usize, p: &Prelude) ->
     );
     println!("  {}; headers are encrypted", human(size as u64));
     print_auth(&p.auth);
-    println!("  pass --key or --key-pem to read the geometry and --verify it");
+    println!("  pass --key or --key-pem (or drop --offline) to read the geometry and --verify it");
     Ok(())
 }
 

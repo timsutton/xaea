@@ -244,3 +244,25 @@ HKDF-SHA256 / AES-256-GCM, with empty `info` and AAD. `<id>` is
 `base64url(SHA-256(uncompressed public point))` of the PEM's key, so a PEM
 can be matched to its archive offline. One PEM served every archive in the
 IPSW we checked.
+
+### In an IPSW
+
+An IPSW is a zip (zip64 for the big ones). Its `.dmg.aea` members are
+**stored** (method 0), so each archive is a plain byte range of the IPSW:
+`xaea decrypt <ipsw-url> <member>` reads the central directory and the
+member's local header with range requests, then streams just that range.
+Plain `.dmg` members (ramdisks, the app cryptex) are DEFLATE'd and not
+AEA at all.
+
+`BuildManifest.plist` names each image's role: every `BuildIdentities[]`
+entry has a `Manifest` of components whose `Info.Path` is a member, and an
+`Info` with `Variant` / `RestoreBehavior`. xaea's role names:
+
+| component | role |
+|---|---|
+| `OS` | `os` (`recovery-os` in a "Recovery …" variant) |
+| `Cryptex1,SystemOS` / `Cryptex1,AppOS` | `system-cryptex` / `app-cryptex` |
+| `Ap,ExclaveOS` | `exclave-os` |
+| `RestoreRamDisk` | `restore-ramdisk` (Erase), `update-ramdisk` (Update / Upgrade variants) |
+
+Other components get a kebab-cased name (`Cryptex1,FooBar` → `cryptex1-foo-bar`).

@@ -74,6 +74,7 @@ fn decrypt_with_key_or_pem_reproduces_the_payload() {
         let o = run(&[
             "decrypt",
             &p.aea,
+            "-o",
             out.to_str().unwrap(),
             flag,
             &val,
@@ -90,6 +91,7 @@ fn decrypt_with_key_or_pem_reproduces_the_payload() {
         code(&[
             "decrypt",
             &p.aea,
+            "-o",
             out.to_str().unwrap(),
             "--key-pem",
             &p.pem,
@@ -125,7 +127,7 @@ fn decrypt_names_the_output_after_the_archive() {
 #[test]
 fn inspect_without_a_key_describes_the_prelude() {
     let Some(p) = p1("p1-locked") else { return };
-    let o = run(&["inspect", &p.aea, "--json"]);
+    let o = run(&["inspect", &p.aea, "--json", "--offline"]);
     assert!(o.status.success());
     let v: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["profile"], 1);
@@ -163,24 +165,28 @@ fn key_problems_exit_7() {
     let out = p.dir.join("out.bin");
     let out = out.to_str().unwrap();
     let zero = format!("hex:{}", "00".repeat(32));
-    assert_eq!(code(&["decrypt", &p.aea, out]), 7, "no key");
     assert_eq!(
-        code(&["inspect", &p.aea, "--verify"]),
+        code(&["decrypt", &p.aea, "-o", out, "--offline"]),
+        7,
+        "no key"
+    );
+    assert_eq!(
+        code(&["inspect", &p.aea, "--verify", "--offline"]),
         7,
         "no key to verify with"
     );
     assert_eq!(
-        code(&["decrypt", &p.aea, out, "--key", &zero]),
+        code(&["decrypt", &p.aea, "-o", out, "--key", &zero]),
         7,
         "wrong key"
     );
     assert_eq!(
-        code(&["decrypt", &p.aea, out, "--key", "base64:AAAA"]),
+        code(&["decrypt", &p.aea, "-o", out, "--key", "base64:AAAA"]),
         7,
         "short key"
     );
     assert_eq!(
-        code(&["decrypt", &p.aea, out, "--key-pem", &p.other_pem]),
+        code(&["decrypt", &p.aea, "-o", out, "--key-pem", &p.other_pem]),
         7,
         "foreign PEM"
     );
@@ -189,6 +195,7 @@ fn key_problems_exit_7() {
         code(&[
             "decrypt",
             &p.aea,
+            "-o",
             out,
             "--key-pem",
             missing.to_str().unwrap()
@@ -227,7 +234,14 @@ fn tampering_fails_verification() {
         assert_eq!(check(&v, check_name), false, "{name}");
         let out = p.dir.join(format!("{name}.bin"));
         assert_eq!(
-            code(&["decrypt", bad, out.to_str().unwrap(), "--key-pem", &p.pem]),
+            code(&[
+                "decrypt",
+                bad,
+                "-o",
+                out.to_str().unwrap(),
+                "--key-pem",
+                &p.pem
+            ]),
             6,
             "{name}: decrypt"
         );
@@ -243,7 +257,12 @@ fn decrypt_writes_a_signed_archives_raw_payload() {
     };
     let out = dir.join("stream.aa");
     let aea = dir.join("archive.aea");
-    let o = run(&["decrypt", aea.to_str().unwrap(), out.to_str().unwrap()]);
+    let o = run(&[
+        "decrypt",
+        aea.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let manifest = common::manifest(&dir);
     let stream = fs::read(&out).unwrap();

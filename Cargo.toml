@@ -49,6 +49,14 @@ aes = "0.9"
 ctr = "0.10"
 # AES-256-GCM for the HPKE key unwrap of restore-image (WKMS) archives.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+# Restore images over the network (`decrypt <ipsw-url>`, and fetching an
+# archive's key from its key URL): a small blocking client, rustls with
+# bundled Mozilla roots (no OpenSSL), no gzip (range reads want raw bytes).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# IPSWs are zips: DEFLATE for BuildManifest.plist, the plist to name each
+# disk image's role.
+flate2 = "1"
+plist = { version = "1", default-features = false }
 
 # LZFSE segments (restore images): pure Rust off macOS; macOS uses the
 # OS's libcompression, which decodes them faster.
