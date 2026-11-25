@@ -299,17 +299,49 @@ fn mac_at(b: &[u8], at: usize) -> &[u8; MAC_LEN] {
         .expect("MAC offsets are validated by Envelope::parse")
 }
 
-impl<'a> Envelope<'a> {
-    /// Parse the envelope and walk its geometry. An encrypting profile
-    /// needs its 32-byte symmetric `key` to read the root and segment
-    /// headers, and a wrong key fails here, on the root header MAC.
-    pub fn parse(file: &'a [u8], key: Option<&Key>) -> Result<Self> {
+/// The fixed part of an archive, through the first cluster header MAC:
+/// all a streaming reader needs before the first cluster.
+pub struct Head {
+    pub profile: Profile,
+    pub scrypt_strength: u8,
+    pub auth: Vec<(String, Vec<u8>)>,
+    pub auth_start: usize,
+    pub auth_end: usize,
+    pub sig_off: usize,
+    pub pubkey_off: usize,
+    pub mainsalt_off: usize,
+    pub rootmac_off: usize,
+    pub root_off: usize,
+    /// Offset of the first cluster header MAC (also: end of the signed prefix).
+    pub chmac_off: usize,
+    pub root: RootHeader,
+    /// The main key, for an encrypting profile (see [`Envelope::main_key`]).
+    pub sym_main: Option<Key>,
+}
+
+impl Head {
+    /// The head's length in bytes, from the archive's first 12.
+    pub fn len(first12: &[u8]) -> Result<usize> {
+        ensure!(
+            first12.len() >= 12 && &first12[0..4] == b"AEA1",
+            "not an AEA file (bad magic)"
+        );
+        let profile = Profile([first12[4], first12[5], first12[6]]);
+        let auth = u32le(first12, 8)? as usize;
+        let sig = if profile.signed() { SIGNATURE_LEN } else { 0 };
+        Ok(12 + auth + sig + profile.key_section_len() + 32 + MAC_LEN + ROOT_HEADER_LEN + MAC_LEN)
+    }
+
+    /// Parse the head from `bytes` (the archive's start, at least
+    /// [`Self::len`] bytes). Encrypting profiles need `key`; a wrong one
+    /// fails the root header MAC.
+    pub fn parse(bytes: &[u8], key: Option<&Key>) -> Result<Self> {
         let Prelude {
             profile,
             scrypt_strength,
             auth,
             auth_end,
-        } = Prelude::parse(file)?;
+        } = Prelude::parse(bytes)?;
         let auth_start = 12usize;
 
         // No-signature profiles have an empty signature section.
@@ -326,7 +358,7 @@ impl<'a> Envelope<'a> {
         off += MAC_LEN;
         let root_off = off;
         ensure!(
-            root_off + ROOT_HEADER_LEN + MAC_LEN <= file.len(),
+            root_off + ROOT_HEADER_LEN + MAC_LEN <= bytes.len(),
             "truncated: no room for root header"
         );
         let chmac_off = root_off + ROOT_HEADER_LEN;
@@ -335,24 +367,24 @@ impl<'a> Envelope<'a> {
         // Encrypting profiles: check the root MAC (encrypt-then-MAC, over the
         // stored bytes) first — it is the only way to tell a wrong key from
         // a corrupt header — then decrypt.
-        let mut rh: Cow<[u8]> = Cow::Borrowed(&file[root_off..chmac_off]);
+        let mut rh: Cow<[u8]> = Cow::Borrowed(&bytes[root_off..chmac_off]);
         let sym_main = if profile.encrypted() {
             let Some(key) = key else {
                 bail!(NeedsKey);
             };
             let main = kdf::main_key(
                 key,
-                &file[mainsalt_off..mainsalt_off + 32],
-                &file[4..8],
+                &bytes[mainsalt_off..mainsalt_off + 32],
+                &bytes[4..8],
                 b"",
             );
             let rk = kdf::root_header_cipher(&main);
             let salt = [
-                mac_at(file, chmac_off).as_slice(),
-                &file[auth_start..auth_end],
+                mac_at(bytes, chmac_off).as_slice(),
+                &bytes[auth_start..auth_end],
             ]
             .concat();
-            if kdf::mac(&rk.mac, &rh, &salt) != *mac_at(file, rootmac_off) {
+            if kdf::mac(&rk.mac, &rh, &salt) != *mac_at(bytes, rootmac_off) {
                 bail!(WrongKey);
             }
             rk.apply_ctr(rh.to_mut());
@@ -377,6 +409,97 @@ impl<'a> Envelope<'a> {
         // 64 KiB segments × 2 per cluster; Apple ships 16 MiB × 256).
         ensure!(root.segment_size >= 0x1000, "segment size too small");
         ensure!(root.segments_per_cluster >= 1, "no segments per cluster");
+        Ok(Head {
+            profile,
+            scrypt_strength,
+            auth,
+            auth_start,
+            auth_end,
+            sig_off,
+            pubkey_off,
+            mainsalt_off,
+            rootmac_off,
+            root_off,
+            chmac_off,
+            root,
+            sym_main,
+        })
+    }
+
+    /// The first cluster header MAC, from the head's bytes.
+    pub fn first_chmac<'b>(&self, bytes: &'b [u8]) -> &'b [u8; MAC_LEN] {
+        mac_at(bytes, self.chmac_off)
+    }
+}
+
+/// Bytes of one cluster's header block as stored: the segment-header list,
+/// the next cluster's header MAC, and the segment-MAC list — both lists
+/// padded to the full cluster capacity.
+pub fn cluster_header_len(root: &RootHeader) -> usize {
+    let spc = root.segments_per_cluster as usize;
+    spc * root.segment_header_len() + MAC_LEN + spc * MAC_LEN
+}
+
+/// Cluster `index`'s header MAC over its stored header block (see
+/// [`cluster_header_len`]): the segment-header list is the data, the rest
+/// the salt.
+pub fn cluster_mac(main: &Key, index: u32, block: &[u8], root: &RootHeader) -> [u8; MAC_LEN] {
+    let chek = kdf::cluster_header_key(&kdf::cluster_key(main, index));
+    let n = root.segments_per_cluster as usize * root.segment_header_len();
+    kdf::mac(&chek, &block[..n], &block[n..])
+}
+
+/// Cluster `index`'s segment-header list in the clear: as stored for
+/// profile 0, decrypted under `sym_main` for encrypting profiles.
+pub fn cluster_headers<'b>(sym_main: Option<&Key>, index: u32, stored: &'b [u8]) -> Cow<'b, [u8]> {
+    match sym_main {
+        None => Cow::Borrowed(stored),
+        Some(main) => {
+            let mut h = stored.to_vec();
+            kdf::cluster_header_cipher(&kdf::cluster_key(main, index)).apply_ctr(&mut h);
+            Cow::Owned(h)
+        }
+    }
+}
+
+/// One segment header: `(orig, stored, checksum)`.
+pub fn segment_header<'h>(
+    headers: &'h [u8],
+    root: &RootHeader,
+    s: usize,
+) -> Result<(u32, u32, &'h [u8])> {
+    let len = root.segment_header_len();
+    let ho = s * len;
+    let orig = u32le(headers, ho)?;
+    ensure!(
+        orig <= root.segment_size,
+        "segment decoded size {orig} exceeds segment_size {}",
+        root.segment_size
+    );
+    let cksum = headers.get(ho + 8..ho + len).context("short read")?;
+    Ok((orig, u32le(headers, ho + 4)?, cksum))
+}
+
+impl<'a> Envelope<'a> {
+    /// Parse the envelope and walk its geometry. An encrypting profile
+    /// needs its 32-byte symmetric `key` to read the root and segment
+    /// headers, and a wrong key fails here, on the root header MAC.
+    pub fn parse(file: &'a [u8], key: Option<&Key>) -> Result<Self> {
+        let Head {
+            profile,
+            scrypt_strength,
+            auth,
+            auth_start,
+            auth_end,
+            sig_off,
+            pubkey_off,
+            mainsalt_off,
+            rootmac_off,
+            root_off,
+            chmac_off,
+            root,
+            sym_main,
+        } = Head::parse(file, key)?;
         if root.encarchive_size != file.len() as u64 {
             eprintln!(
                 "warning: root header encarchive_size {} != file size {}",
@@ -408,35 +531,22 @@ impl<'a> Envelope<'a> {
             let headers = file
                 .get(seghdrs_off..cur)
                 .with_context(|| format!("truncated: cluster {cidx} headers run past EOF"))?;
-            let headers: Cow<[u8]> = match &sym_main {
-                None => Cow::Borrowed(headers),
-                Some(main) => {
-                    let mut h = headers.to_vec();
-                    kdf::cluster_header_cipher(&kdf::cluster_key(main, cidx)).apply_ctr(&mut h);
-                    Cow::Owned(h)
-                }
-            };
+            let headers = cluster_headers(sym_main.as_ref(), cidx, headers);
             let nextchmac_off = cur;
             cur += MAC_LEN;
             let seghmacs_off = cur;
             cur += spc * MAC_LEN;
             let data_off = cur;
             for s in 0..n as usize {
-                let ho = s * seg_hdr_len;
                 // Hostile-header limits (review #6): a decoded segment can
                 // never exceed the declared segment size, and the decoded
                 // sizes must sum to the declared payload size — otherwise a
                 // crafted header could force multi-GiB allocations per
                 // decoder thread.
-                let orig = u32le(&headers, ho)?;
-                ensure!(
-                    orig <= root.segment_size,
-                    "segment {idx} decoded size {orig} exceeds segment_size {}",
-                    root.segment_size
-                );
-                let comp = u32le(&headers, ho + 4)? as usize;
+                let (orig, comp, _) = segment_header(&headers, &root, s)
+                    .with_context(|| format!("segment {}", idx + s as u64))?;
                 sum_orig += u64::from(orig);
-                cur += comp;
+                cur += comp as usize;
             }
             ensure!(
                 cur <= file.len(),
@@ -593,18 +703,15 @@ impl<'a> Envelope<'a> {
         // chmac = mac(cluster_header_key, segment-header list padded to full
         // cluster capacity, next-chmac || segment-MAC list padded to capacity).
         let cap = self.root.segments_per_cluster as usize;
-        let seg_hdr_len = self.root.segment_header_len();
         let mut any_matched = false;
         let mut clusters_ok = true;
         for (ci, c) in self.clusters.iter().enumerate() {
-            let chek = kdf::cluster_header_key(&kdf::cluster_key(main, c.index));
             let stored = match ci.checked_sub(1) {
                 None => first_chmac,
                 Some(prev) => mac_at(self.file, self.clusters[prev].nextchmac_off),
             };
-            let seghdrs = &self.file[c.seghdrs_off..c.seghdrs_off + cap * seg_hdr_len];
-            let salt = &self.file[c.nextchmac_off..c.seghmacs_off + cap * MAC_LEN];
-            if kdf::mac(&chek, seghdrs, salt) == *stored {
+            let block = &self.file[c.seghdrs_off..c.seghmacs_off + cap * MAC_LEN];
+            if cluster_mac(main, c.index, block, &self.root) == *stored {
                 any_matched = true;
             } else {
                 clusters_ok = false;
@@ -799,7 +906,7 @@ pub struct NeedsKey;
 
 impl fmt::Display for NeedsKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("archive is encrypted: pass its key with --key, or the PEM its key URL serves with --key-pem")
+        f.write_str("archive is encrypted: pass its key with --key, or the PEM its key URL serves with --key-pem (fetched automatically unless --offline)")
     }
 }
 

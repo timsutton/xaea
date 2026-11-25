@@ -23,7 +23,8 @@ pub enum Commands {
     #[command(visible_alias = "x")]
     Extract(ExtractArgs),
     /// Write an AEA's whole payload to one file, decrypting it if needed
-    /// (e.g. a restore image's `.dmg.aea` to its `.dmg`)
+    /// (e.g. a restore image's `.dmg.aea` to its `.dmg`, also straight
+    /// from an IPSW URL)
     #[command(visible_alias = "d")]
     Decrypt(DecryptArgs),
     /// Print a shell-completion script to stdout (e.g. `xaea completions zsh`)
@@ -38,7 +39,8 @@ pub enum Commands {
 
 #[derive(Args)]
 pub struct InspectArgs {
-    /// Archive path; `-` reads the archive from standard input
+    /// Archive path; `-` reads the archive from standard input. An IPSW
+    /// (path or URL) lists its disk images and their roles
     pub file: PathBuf,
     /// Machine-readable output
     #[arg(long)]
@@ -137,7 +139,8 @@ pub struct CatArgs {
 }
 
 /// How to obtain the key of an encrypted archive (restore images use
-/// profile 1). Neither is needed for unencrypted (profile 0) archives.
+/// profile 1). Neither is needed for unencrypted (profile 0) archives, and
+/// by default an encrypted archive's key is fetched from the URL it names.
 #[derive(Args)]
 pub struct KeyArgs {
     /// Key of an encrypted archive: `base64:…`, `hex:…`, or bare base64
@@ -145,19 +148,28 @@ pub struct KeyArgs {
     #[arg(long, value_name = "KEY", conflicts_with = "key_pem")]
     pub key: Option<String>,
     /// Private-key PEM that unwraps the archive's own key: the file served
-    /// at the archive's `com.apple.wkms.fcs-key-url` (`inspect` shows it;
-    /// fetch it with e.g. `curl -L <url> -o key.pem`)
+    /// at the archive's `com.apple.wkms.fcs-key-url` (`inspect` shows it).
+    /// Only needed with --offline, or to use a saved copy
     #[arg(long, value_name = "FILE")]
     pub key_pem: Option<PathBuf>,
+    /// Make no network requests: don't fetch an encrypted archive's key
+    /// from the URL it names (pass --key or --key-pem instead)
+    #[arg(long)]
+    pub offline: bool,
 }
 
 #[derive(Args)]
 pub struct DecryptArgs {
-    /// Archive path; `-` reads the archive from standard input
-    pub file: PathBuf,
+    /// The archive: a `.aea` path or URL, or an IPSW (path or URL) to
+    /// take a disk image from; `-` reads an archive from standard input
+    pub input: String,
+    /// Which disk image of an IPSW: a role from its BuildManifest (`os`,
+    /// `system-cryptex`, …) or a member name. Run without it to list them
+    pub member: Option<String>,
     /// Output file (default: the archive's name without `.aea`, in the
     /// current directory). Never overwritten if it exists.
-    pub out: Option<PathBuf>,
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
     #[command(flatten)]
     pub key: KeyArgs,
     /// Machine-readable summary
@@ -170,6 +182,9 @@ pub struct DecryptArgs {
     /// Decoder threads (default: all cores)
     #[arg(short, long)]
     pub jobs: Option<usize>,
+    /// Range requests in flight when reading from a URL (default: 4)
+    #[arg(long, value_name = "N")]
+    pub connections: Option<usize>,
     /// LZMA decoder, for LZMA-compressed archives: `lzma-turbo` (the
     /// default), `liblzma` or `libcompression` (macOS only)
     #[arg(long, value_enum, default_value_t = XzDecoder::LzmaTurbo)]

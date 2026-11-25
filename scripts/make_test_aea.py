@@ -653,6 +653,38 @@ def build_profile1(outdir: Path, seed: int) -> None:
         "key": base64.b64encode(key).decode(), "segments": nsegs,
         "original_size": len(payload), "padding": len(padding)}))
     print(f"p1.aea: {total} bytes, {nsegs} segments, {nclusters} clusters")
+    build_ipsw(outdir, file)
+
+
+def build_ipsw(outdir: Path, aea: bytes) -> None:
+    """p1.ipsw: an IPSW-shaped zip holding p1.aea (stored, as Apple stores
+    its .dmg.aea members) as the OS image, a plain DEFLATE'd ramdisk, and a
+    BuildManifest.plist naming their roles in two build identities."""
+    import plistlib
+    import zipfile
+
+    def ident(variant, behavior, ramdisk):
+        return {"Info": {"Variant": variant, "RestoreBehavior": behavior},
+                "Manifest": {"OS": {"Info": {"Path": "100-00001-001.dmg.aea"}},
+                             "RestoreRamDisk": {"Info": {"Path": ramdisk}}}}
+    manifest = {"ProductVersion": "1.0", "ProductBuildVersion": "1A1",
+                "SupportedProductTypes": ["Test1,1"],
+                "BuildIdentities": [
+                    ident("Customer Erase Install (IPSW)", "Erase",
+                          "100-00002-001.dmg"),
+                    ident("Customer Upgrade Install (IPSW)", "Update",
+                          "100-00003-001.dmg")]}
+    with zipfile.ZipFile(outdir / "p1.ipsw", "w") as z:
+        z.writestr("BuildManifest.plist", plistlib.dumps(manifest),
+                   compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("100-00002-001.dmg", b"ramdisk " * 4096,
+                   compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("Firmware/100-00001-001.dmg.aea.trustcache", b"tc",
+                   compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("100-00001-001.dmg.aea", aea,
+                   compress_type=zipfile.ZIP_STORED)
+        z.writestr("100-00003-001.dmg", b"update " * 4096,
+                   compress_type=zipfile.ZIP_DEFLATED)
 
 
 if __name__ == "__main__":

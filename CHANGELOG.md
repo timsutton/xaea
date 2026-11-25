@@ -7,10 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-* `xaea decrypt <archive> [out]`: write an archive's whole payload to one
-  file. With `--key` or `--key-pem`, this decrypts the encrypted (profile 1)
-  `.dmg.aea` disk images inside iOS and macOS restore images (IPSWs), verifying
-  MACs and checksums, at the speed of Apple's `aea decrypt`.
+* `xaea decrypt <archive> [-o out]`: write an archive's whole payload to one
+  file. This decrypts the encrypted (profile 1) `.dmg.aea` disk images inside
+  iOS and macOS restore images (IPSWs), verifying MACs and checksums, at the
+  speed of Apple's `aea decrypt`. The key is fetched from the URL the archive
+  names (`--offline` to never fetch; `--key`/`--key-pem` to supply it).
+* `xaea decrypt <ipsw> <member>` takes a disk image from a local or remote
+  IPSW by its BuildManifest role (`os`, `system-cryptex`, …) or member name;
+  from a URL it downloads only that member, with HTTP range requests, and
+  decrypts it as it arrives. `xaea inspect <ipsw>` lists the disk images.
 * `inspect` reads encrypted (profile 1) archives: without a key it shows the
   auth data and the URL of the key PEM; with `--key`/`--key-pem` it shows
   the full geometry and `--verify` checks every MAC (including the padding

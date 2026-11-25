@@ -69,7 +69,7 @@ The `--no-compress` option is by far the fastest extraction method, but at the c
 
 On macOS, [Apple's `libcompression` framework](https://developer.apple.com/documentation/compression/compression_lzma) can be used instead of the default [`lzma-turbo`](https://crates.io/crates/lzma-turbo/) by passing `--decoder=libcompression`.
 
-AEA is also used by Apple to distribute other material, such as restore images, whose encrypted `.dmg.aea` disk images `xaea decrypt` can write out given the PEM their key URL serves (`xaea inspect` shows it). For more firmware tooling, see the [ipsw](https://github.com/blacktop/ipsw) tool. The format used for the Xcode image distribution uses AEA for its signing/integrity features, not for encryption.
+AEA is also used by Apple to distribute other material, such as restore images, whose encrypted `.dmg.aea` disk images `xaea decrypt` can write out, from a local or remote IPSW (`xaea inspect <ipsw>` lists them). For more firmware tooling, see the [ipsw](https://github.com/blacktop/ipsw) tool. The format used for the Xcode image distribution uses AEA for its signing/integrity features, not for encryption.
 
 ## Documentation
 
