@@ -23,8 +23,15 @@ memmap2 = "0.9"
 sha2 = "0.11"
 hmac = "0.13"
 hkdf = "0.13"
+# Profile 1 (SymmetricEncryption): AES-CTR for segment/cluster-header decrypt,
+# AES-256-GCM inside the HPKE key unwrap (DHKEM(P-256, HKDF-SHA256),
+# HKDF-SHA256, AES-256-GCM) that recovers the archive key from the auth data.
+aes = "0.9"
+ctr = "0.10"
+aes-gcm = "0.11"
 x509-parser = "0.18"
-p256 = { version = "0.14", features = ["ecdsa"] }
+# `ecdh` (not just `ecdsa`) for the profile-1 HPKE DHKEM(P-256, HKDF-SHA256) key unwrap.
+p256 = { version = "0.14", features = ["ecdsa", "ecdh"] }
 p384 = { version = "0.14", features = ["ecdsa"] }
 libc = "0.2"
 # Vendored xz-utils (5.8.x), statically linked, behind `--decoder liblzma`; we
@@ -44,6 +51,9 @@ rsa = { version = "0.10", default-features = false, features = [
 ] }
 serde_json = "1"
 tempfile = "3"
+# Parse the base64 `enc-request`/`wrapped-key` fields inside the WKMS
+# fcs-response auth entry when unwrapping a profile-1 archive key.
+base64 = "0.22"
 
 [features]
 # Pipeline timing probes (XAEA_STATS breakdown, XAEA_TL timeline, XAEA_DQ/XAEA_WQ
