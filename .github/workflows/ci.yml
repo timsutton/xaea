@@ -98,6 +98,15 @@ jobs:
           echo "$RUNNER_TEMP/aea-python/bin" >> "$GITHUB_PATH"
       - run: cargo test --locked
 
+  linux-docker:
+    name: Linux Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Builds scripts/linux.Dockerfile and runs a container from it. The grep
+      # fails the job if its Rust version falls behind RUST_VERSION.
+      - run: scripts/linux.sh rustc --version | grep -F "rustc $RUST_VERSION "
+
   fixture:
     name: Real fixture (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

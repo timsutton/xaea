@@ -12,6 +12,8 @@ It is a standard Rust project:
   - `cargo clippy --all-targets --locked -- -D warnings`
   - `cargo test --locked`
 
+To build and test on Linux, `scripts/linux.sh` opens a Docker container with the checkout mounted, or runs a command in it (`scripts/linux.sh cargo test --locked`). See the script's header for details.
+
 There's a convention of using a `fixtures` directory to contain .aea files from actual Xcode distributed archives. You can look there if you need to exercise them in your work. Set the `AEA_FIXTURE` env var to a `.aea` file if you need to use it during `cargo test` as well (but they make tests take much longer), adding `--ignored` to the `cargo test` invocation.
 
 ## Branching
