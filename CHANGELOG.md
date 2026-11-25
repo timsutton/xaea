@@ -16,9 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-* Shortened the `extract --help` text for `--compress` and `--no-compress`.
-* Help output now wraps to the terminal width, keeping continuation lines
-  indented under the option help text.
+* Improved readability in `--help` usage.
 
 ## 0.2.0 - 2026-11-22
 
