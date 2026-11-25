@@ -8,6 +8,8 @@ use crate::cmd::decrypt::{Job, Sink};
 use crate::envelope::{Head, cluster_header_len, cluster_headers, cluster_mac, segment_header};
 use crate::kdf;
 use anyhow::{Context, Result, ensure};
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::Sha256;
 use std::borrow::Cow;
 
 /// A source of the archive's bytes, in order.
@@ -109,15 +111,22 @@ pub fn feed(
         root.original_size
     );
     // Random padding up to encarchive_size, authenticated by the last
-    // cluster's next-chmac slot.
+    // cluster's next-chmac slot. It can be large (~1% of a simulator
+    // runtime asset), so it is MACed in pieces as it streams in.
     let pad = total - pos;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&kdf::padding_key(&main))
+        .expect("HMAC accepts any key size");
+    let mut buf = Vec::new();
+    while pos < total {
+        let n = (total - pos).min(8 << 20);
+        src.take_into(n as usize, &mut buf)?;
+        mac.update(&buf);
+        pos += n;
+        progress(pos);
+    }
+    let padding_mac: [u8; 32] = mac.finalize().into_bytes().into();
     ensure!(
-        pad <= 64 << 20,
-        "{pad} bytes after the last segment: not an archive's padding"
-    );
-    let padding = src.take(pad as usize)?;
-    ensure!(
-        !verify || pad == 0 || kdf::hmac_plain(&kdf::padding_key(&main), &padding) == chmac,
+        !verify || pad == 0 || padding_mac == chmac,
         "padding MAC mismatch (corrupt or tampered archive)"
     );
     progress(total);
