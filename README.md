@@ -2,9 +2,9 @@
 
 xaea is a CLI that can extract the Xcode app from an [AEA archive](https://theapplewiki.com/wiki/Apple_Encrypted_Archive) several times faster than the built-in tools on macOS. It's written in Rust and runs on both macOS and Linux.
 
-Apple will distribute Xcode on the [Developer downloads site](https://developer.apple.com/download/more/) [exclusively as an AEA](https://developer.apple.com/documentation/xcode-release-notes/xcode-27_3-release-notes#Xcode-AEA) archive after the release of Xcode 27.3.
+Apple will distribute Xcode on [developer.apple.com](https://developer.apple.com/download/more/) exclusively as an AEA archive [after the release of Xcode 27.3](https://developer.apple.com/documentation/xcode-release-notes/xcode-27_3-release-notes#Xcode-AEA).
 
-This project is inspired by Saagar Jha's [unxip](https://github.com/saagarjha/unxip), and aims to make the LZMA decoding and file-writing tasks as performant as possible, while keeping the space-saving benefits of APFS compression (on macOS) and file integrity features of the AEA format.
+This project is inspired by Saagar Jha's [unxip](https://github.com/saagarjha/unxip), and aims to make its LZMA decoding and file-writing tasks as performant as possible, while keeping the space-saving benefits of APFS compression (on macOS) and file integrity features of the AEA format.
 
 **Note:** This tool is very new and not widely tested, its code is written nearly entirely by LLMs, and its command-line interface / behavior may change prior to its 1.0 release.
 
