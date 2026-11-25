@@ -672,13 +672,7 @@ impl<'a> Envelope<'a> {
         let digest = if self.sym_main.is_some() {
             let keys = self.segment_cipher(seg);
             let compression = self.root.compression;
-            match payload::decode(
-                seg.data.to_vec(),
-                seg.orig as usize,
-                keys.as_ref(),
-                compression,
-                dec,
-            ) {
+            match payload::decode(seg.data, seg.orig as usize, keys.as_ref(), compression, dec) {
                 Ok(decoded) => Sha256::digest(&decoded),
                 Err(_) => return false,
             }
@@ -692,7 +686,7 @@ impl<'a> Envelope<'a> {
             }
         } else {
             match payload::decode(
-                seg.data.to_vec(),
+                seg.data,
                 seg.orig as usize,
                 None,
                 self.root.compression,

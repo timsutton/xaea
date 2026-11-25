@@ -565,7 +565,7 @@ def p256_key(rng_state: bytes, label: bytes):
 def build_profile1(outdir: Path, seed: int) -> None:
     """An encrypted, unsigned profile-1 archive shaped like Apple's restore
     images: a disk-image-like payload (not an AA01 stream) in LZMA and
-    stored segments, an all-zero segment (left sparse by `decrypt`),
+    stored segments, an all-zero segment,
     multi-cluster with the padded last cluster, random padding up to
     encarchive_size, and the key HPKE-wrapped for a PEM whose
     base64url(SHA-256(point)) names the key URL.
@@ -575,7 +575,7 @@ def build_profile1(outdir: Path, seed: int) -> None:
     p1.json (the symmetric key, base64)."""
     import base64
     rng = hashlib.sha256(f"xaea-test-{seed}-p1".encode()).digest()
-    payload = (b"\x00" * SEG                              # sparse hole
+    payload = (b"\x00" * SEG                              # all-zero segment
                + b"".join(b"block %08d " % i for i in range(9000))
                + prand(rng + b"rand", SEG + 123))          # stored as-is
     segs = [payload[i:i + SEG] for i in range(0, len(payload), SEG)]

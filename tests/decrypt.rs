@@ -83,7 +83,6 @@ fn decrypt_with_key_or_pem_reproduces_the_payload() {
         assert_eq!(fs::read(&out).unwrap(), want, "{name}");
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(v["verified"], true);
-        assert_eq!(v["sparse_segments"], 1, "the all-zero segment stays a hole");
     }
     // --no-verify takes the same path minus the checks.
     let out = p.dir.join("noverify.bin");

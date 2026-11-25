@@ -10,7 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * `xaea decrypt <archive> [out]`: write an archive's whole payload to one
   file. With `--key` or `--key-pem`, this decrypts the encrypted (profile 1)
   `.dmg.aea` disk images inside iOS and macOS restore images (IPSWs), verifying
-  MACs and checksums and leaving empty regions sparse.
+  MACs and checksums, at the speed of Apple's `aea decrypt`.
 * `inspect` reads encrypted (profile 1) archives: without a key it shows the
   auth data and the URL of the key PEM; with `--key`/`--key-pem` it shows
   the full geometry and `--verify` checks every MAC (including the padding

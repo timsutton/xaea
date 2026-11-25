@@ -777,6 +777,63 @@ summed thread-seconds, not wall: with 6–10 writers there is more than a
 fifth of slack, and the only routings that capture the savings spend
 more than they are worth in lost parallelism.
 
+## Restore-image decrypt (`xaea decrypt`, profile 1)
+
+Measured on an M4 Max (16 cores) with `141-10680-235.dmg.aea` from the
+iPhone17,3 27.2.1 IPSW: 2.25 GiB archive → 5.88 GiB APFS image in 6,026
+LZFSE segments of 1 MiB. The machine was not idle (load 4–10), so only
+differences that repeated are recorded.
+
+Unlike Xcode, the work here is light per byte. Per worker thread: LZFSE
+(libcompression) ~45%, SHA-256 of the plaintext ~31%, HMAC of the
+ciphertext ~13%, `pwrite` ~6%, AES-CTR ~4%; all of the crypto already
+runs on the CPU's AES/SHA instructions. Total CPU ≈ 8.4 s verified, 4.2 s
+unverified, against ~0.75 s of decode+verify wall at 16 threads. **The
+bound is writing ~6 GB**, which takes 0.9–1.0 s on this machine however it
+is done:
+
+| writing 6,000 MiB of non-zero data | wall |
+|---|---|
+| `pwrite`, in order, 1 thread / 16 threads | 0.86–1.02 s / 1.11–1.14 s |
+| plain `write(2)` append, 1 thread | 0.93–0.98 s |
+| `F_PREALLOCATE` first, then `pwrite` | 0.93–0.99 s |
+| `F_NOCACHE`, 16 threads | 0.98 s |
+| `mmap` the output and copy in, 4–16 threads | 1.49–2.27 s |
+| `pwrite`, 1 thread, **slightly out of order** (within windows of 32) | **1.28–1.30 s** |
+
+What the shape of `decrypt` follows from:
+
+* **One writer thread, writing in payload order.** Writes to one file
+  serialize in the kernel, so workers that `pwrite` themselves just queue
+  on it; and parallel workers finish segments out of order, which the
+  last row shows costs ~45%. Workers send buffers to the writer, which
+  holds early arrivals until the next segment in order is in.
+* **Pooled buffers, decrypt fused with the copy.** Workers reuse their
+  buffers instead of allocating two fresh 1 MiB buffers per segment, and
+  AES-CTR runs from the archive map straight into the reusable buffer
+  (`apply_keystream_b2b`) rather than copying first. Small next to the
+  write, but it keeps CPU off the critical path when the machine is busy.
+* **No sparse output.** Skipping all-zero segments saved ~340 MB of disk
+  on this image (5.83 vs 6.17 GB) but cost **~0.7 s at `close(2)`**:
+  1.60–1.82 s against 0.93–0.98 s, repeated over 3 rounds. The cost
+  followed the *result* being sparse rather than how it got there:
+  writing the zeros into a file that was not pre-sized also came out
+  sparse (APFS made holes of them) and was just as slow. A pre-sized
+  file with every byte written is the fast case, and the same layout
+  Apple's tool writes.
+* **Write to a temporary file and rename it into place.** Kept for
+  failure hygiene. One unexplained observation for whoever revisits it:
+  opening the final path directly with `create_new` (no temp file) was
+  slow at close too (1.62–1.77 s), even with every byte written. The
+  temp-file route was fast in every run.
+
+Result: 0.90–1.18 s for xaea verifying (0.87–0.88 s with `--no-verify`)
+vs 0.88–1.00 s for `aea decrypt`, down from 1.5–2.2 s for the first
+version; output byte-identical. The remaining
+headroom on a local file is ≈0: it is the cost of writing the image.
+The big win left is upstream: decrypting while downloading only the
+wanted `.dmg.aea` out of a remote IPSW.
+
 ## Re-measuring
 
 ```sh

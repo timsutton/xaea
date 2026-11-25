@@ -51,6 +51,15 @@ impl CipherKeys {
         use aes::cipher::{KeyIvInit, StreamCipher};
         ctr::Ctr128BE::<aes::Aes256>::new(&self.aes.into(), &self.iv.into()).apply_keystream(buf);
     }
+
+    /// [`Self::apply_ctr`] from `input` into `out` (same length), fusing
+    /// the copy out of the archive map with the decryption. Panics if the
+    /// lengths differ.
+    pub fn apply_ctr_b2b(&self, input: &[u8], out: &mut [u8]) {
+        use aes::cipher::{KeyIvInit, StreamCipher};
+        ctr::Ctr128BE::<aes::Aes256>::new(&self.aes.into(), &self.iv.into())
+            .apply_keystream_b2b(input, out);
+    }
 }
 
 /// `prefix || index` (little-endian), the info string of the indexed keys.

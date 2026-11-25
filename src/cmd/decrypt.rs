@@ -1,12 +1,21 @@
 //! `xaea decrypt`: write an archive's whole payload to one file — for a
 //! restore image's `.dmg.aea`, its disk image.
 //!
-//! Segments are independent once the headers are known, and each has a
-//! fixed place in the output, so this is a flat parallel loop: every
-//! worker takes the next segment, checks its MAC, decrypts and
-//! decompresses it, checks its checksum, and `pwrite`s it at its offset.
-//! All-zero segments are not written at all, leaving holes in a sparse
-//! output (disk images are full of them).
+//! Segments are independent once the headers are known: workers take the
+//! next segment, check its MAC, decrypt and decompress it into a pooled
+//! buffer, and check its checksum; one writer thread writes the buffers
+//! out in payload order. On an M4 Max this writes a 5.9 GiB image as fast
+//! as Apple's `aea decrypt` (~1 s), which is about the speed of writing
+//! the bytes at all.
+//!
+//! What the write side measured on APFS (details in doc/PERFORMANCE-NOTES.md):
+//! * Writes to one file serialize in the kernel; more writer threads do
+//!   not help.
+//! * Writing segments slightly out of order (as parallel workers finish
+//!   them) is ~45% slower than in order.
+//! * A sparse output (skipping all-zero segments, or letting APFS detect
+//!   them) costs ~0.7 s more, paid when the file is closed, to save ~5% of
+//!   the disk space. So every byte is written.
 
 use super::{human, open_archive, parse_envelope};
 use crate::cli::DecryptArgs;
@@ -17,11 +26,13 @@ use crate::kdf::{self, Key};
 use crate::payload;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::Instant;
 
 pub fn run(args: &DecryptArgs) -> Result<()> {
@@ -41,7 +52,7 @@ pub fn run(args: &DecryptArgs) -> Result<()> {
         .jobs
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, std::num::NonZero::get))
         .max(1);
-    let st = decrypt(&env, &out, jobs, args).with_exit(Exit::Extraction)?;
+    decrypt(&env, &out, jobs, args).with_exit(Exit::Extraction)?;
     let secs = t0.elapsed().as_secs_f64();
     let bytes = env.root.original_size;
     let rate = bytes as f64 / secs / (1u64 << 20) as f64;
@@ -54,14 +65,13 @@ pub fn run(args: &DecryptArgs) -> Result<()> {
                 "verified": !args.no_verify,
                 "bytes": bytes,
                 "segments": env.total_segments,
-                "sparse_segments": st.holes,
                 "jobs": jobs,
                 "seconds": secs, "mib_per_s": rate,
             })
         );
     } else {
         println!(
-            "{} {} ({}) in {secs:.1}s ({rate:.0} MiB/s, {jobs} threads{})",
+            "{} {} ({}) in {secs:.1}s ({rate:.0} MiB/s, {jobs} threads)",
             if args.no_verify {
                 "wrote"
             } else {
@@ -69,11 +79,6 @@ pub fn run(args: &DecryptArgs) -> Result<()> {
             },
             out.display(),
             human(bytes),
-            if st.holes > 0 {
-                format!(", {} empty segments left sparse", st.holes)
-            } else {
-                String::new()
-            },
         );
     }
     Ok(())
@@ -99,12 +104,7 @@ fn output_path(args: &DecryptArgs) -> Result<PathBuf> {
         .context("cannot name the output after the archive (no `.aea` suffix): give an output path")
 }
 
-struct Stats {
-    /// Segments skipped because they decoded to all zeroes.
-    holes: u64,
-}
-
-fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Result<Stats> {
+fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Result<()> {
     let verify = !args.no_verify;
     // Up-front: the signature chain (profile 0) and the root/cluster
     // header MACs. Segment MACs and checksums are checked per segment.
@@ -146,15 +146,29 @@ fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Resul
         })
         .collect();
     let next = AtomicUsize::new(0);
-    let holes = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let fail = |e: anyhow::Error| {
+        stop.store(true, Relaxed);
+        first_err
+            .lock()
+            .expect("no panics hold it")
+            .get_or_insert(e);
+    };
     let spc = env.root.segments_per_cluster;
 
-    let work = || -> Result<()> {
+    // A single writer thread, writing in payload order (see the module
+    // docs). Payload buffers cycle back to the workers through `pool`
+    // instead of being reallocated.
+    let workers = jobs.min(segs.len()).max(1);
+    let (tx, rx) = sync_channel::<(usize, Vec<u8>)>(workers * 2);
+    let pool: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+
+    let work = |tx: SyncSender<(usize, Vec<u8>)>| -> Result<()> {
+        let mut scratch = Vec::new();
         while !stop.load(Relaxed) {
             let i = next.fetch_add(1, Relaxed);
-            let Some((at, sg)) = segs.get(i) else {
+            let Some((_, sg)) = segs.get(i) else {
                 return Ok(());
             };
             let ck = kdf::cluster_key(&main, sg.cluster);
@@ -170,12 +184,19 @@ fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Resul
                 .profile
                 .encrypted()
                 .then(|| kdf::segment_cipher(&ck, local));
-            let plain = payload::decode(
-                sg.data.to_vec(),
+            let mut plain = pool
+                .lock()
+                .expect("no panics hold it")
+                .pop()
+                .unwrap_or_default();
+            payload::decode_into(
+                sg.data,
                 sg.orig as usize,
                 keys.as_ref(),
                 env.root.compression,
                 args.decoder,
+                &mut scratch,
+                &mut plain,
             )
             .with_context(|| format!("segment {}", sg.index))?;
             if check_sums {
@@ -185,26 +206,32 @@ fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Resul
                     sg.index
                 );
             }
-            if plain.iter().all(|&b| b == 0) {
-                holes.fetch_add(1, Relaxed);
-            } else {
-                fh.write_all_at(&plain, *at)
-                    .with_context(|| format!("write {}", out.display()))?;
+            if tx.send((i, plain)).is_err() {
+                return Ok(()); // the writer failed and reported it
             }
         }
         Ok(())
     };
     std::thread::scope(|scope| {
-        for _ in 0..jobs.min(segs.len().max(1)) {
-            scope.spawn(|| {
-                if let Err(e) = work() {
-                    stop.store(true, Relaxed);
-                    first_err
-                        .lock()
-                        .expect("no panics hold it")
-                        .get_or_insert(e);
+        for _ in 0..workers {
+            let tx = tx.clone();
+            scope.spawn(|| work(tx).unwrap_or_else(fail));
+        }
+        drop(tx);
+        // The writer, on this thread. Workers claim segments in order, so
+        // the reorder window stays around one segment per worker.
+        let mut pending = BTreeMap::new();
+        let mut due = 0usize;
+        'recv: for (i, buf) in rx {
+            pending.insert(i, buf);
+            while let Some(buf) = pending.remove(&due) {
+                if let Err(e) = fh.write_all_at(&buf, segs[due].0) {
+                    fail(anyhow::Error::new(e).context(format!("write {}", out.display())));
+                    break 'recv; // dropping rx unblocks the workers
                 }
-            });
+                pool.lock().expect("no panics hold it").push(buf);
+                due += 1;
+            }
         }
     });
     if let Some(e) = first_err.into_inner().expect("no panics hold it") {
@@ -213,7 +240,5 @@ fn decrypt(env: &Envelope, out: &Path, jobs: usize, args: &DecryptArgs) -> Resul
     tmp.persist_noclobber(out)
         .map_err(|e| e.error)
         .with_context(|| format!("move the output into place at {}", out.display()))?;
-    Ok(Stats {
-        holes: holes.into_inner() as u64,
-    })
+    Ok(())
 }
