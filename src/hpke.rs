@@ -15,12 +15,12 @@ use aes_gcm::{
 use anyhow::{Result, anyhow, ensure};
 use base64::Engine as _;
 use hmac::{Hmac, KeyInit, Mac};
+use p256::NistP256;
 use p256::Scalar;
 use p256::ecdh::{SharedSecret, diffie_hellman};
-use p256::elliptic_curve::NonZeroScalar;
 use p256::elliptic_curve::Field as _;
+use p256::elliptic_curve::NonZeroScalar;
 use p256::elliptic_curve::ops::Reduce;
-use p256::NistP256;
 use sha2::Sha256;
 
 /// `KEM = DHKEM(P-256, HKDF-SHA256)` (0x0010).
@@ -40,8 +40,7 @@ fn hkdf_expand(prk: &[u8; 32], info: &[u8], length: usize) -> Vec<u8> {
     let mut t_len = 0usize;
     let mut counter = 1u8;
     while out.len() < length {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(prk).expect("HMAC accepts any key size");
+        let mut mac = Hmac::<Sha256>::new_from_slice(prk).expect("HMAC accepts any key size");
         mac.update(&t[..t_len]);
         mac.update(info);
         mac.update(&[counter]);
@@ -66,7 +65,13 @@ fn labeled_extract(suite_id: &[u8], salt: &[u8], label: &[u8], ikm: &[u8]) -> [u
 }
 
 /// RFC 9180 §5.1 `LabeledExpand(suite_id, prk, label, info, L)`.
-fn labeled_expand(suite_id: &[u8], prk: &[u8; 32], label: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+fn labeled_expand(
+    suite_id: &[u8],
+    prk: &[u8; 32],
+    label: &[u8],
+    info: &[u8],
+    length: usize,
+) -> Vec<u8> {
     let mut labeled_info = Vec::with_capacity(2 + 8 + suite_id.len() + label.len() + info.len());
     labeled_info.extend_from_slice(&(length as u16).to_be_bytes());
     labeled_info.extend_from_slice(b"HPKE-v1");
@@ -88,10 +93,7 @@ fn parse_scalar(be: &[u8]) -> Result<Scalar> {
     let mut bytes = [0u8; 32];
     bytes[32 - be.len()..].copy_from_slice(be);
     let scalar = <Scalar as Reduce<p256::FieldBytes>>::reduce(&bytes.into());
-    ensure!(
-        !bool::from(scalar.is_zero()),
-        "private key scalar is zero"
-    );
+    ensure!(!bool::from(scalar.is_zero()), "private key scalar is zero");
     Ok(scalar)
 }
 
@@ -103,16 +105,16 @@ pub fn parse_private_key_pem(pem: &[u8]) -> Result<Scalar> {
     let mut b64 = String::new();
     for line in pem.lines() {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("-----BEGIN ") {
-            if let Some(rest) = rest.strip_suffix("-----") {
-                let rest = rest.trim();
-                ensure!(
-                    label.is_none() && matches!(rest, "PRIVATE KEY" | "EC PRIVATE KEY"),
-                    "unsupported PEM type {rest:?}"
-                );
-                label = Some(rest);
-                continue;
-            }
+        if let Some(rest) = line.strip_prefix("-----BEGIN ")
+            && let Some(rest) = rest.strip_suffix("-----")
+        {
+            let rest = rest.trim();
+            ensure!(
+                label.is_none() && matches!(rest, "PRIVATE KEY" | "EC PRIVATE KEY"),
+                "unsupported PEM type {rest:?}"
+            );
+            label = Some(rest);
+            continue;
         }
         if line.starts_with("-----END ") {
             ensure!(label.is_some(), "PEM END without BEGIN");
@@ -147,7 +149,10 @@ pub fn parse_private_key_pem(pem: &[u8]) -> Result<Scalar> {
         Some(other) => return Err(anyhow!("unsupported PEM type {other:?}")),
     };
     // SEC 1: ECPrivateKey ::= SEQUENCE { version, privateKey OCTET STRING, ... }
-    ensure!(!sec1.is_empty() && sec1[0] == 0x30, "malformed ECPrivateKey");
+    ensure!(
+        !sec1.is_empty() && sec1[0] == 0x30,
+        "malformed ECPrivateKey"
+    );
     let (seq_len, hdr) = der_len(sec1, 1)?;
     ensure!(sec1.len() >= hdr + seq_len, "truncated ECPrivateKey");
     let seq = &sec1[hdr..hdr + seq_len];
@@ -169,7 +174,10 @@ fn der_len(seq: &[u8], pos: usize) -> Result<(usize, usize)> {
         Ok((first as usize, pos + 1))
     } else {
         let n = (first & 0x7f) as usize;
-        ensure!(n >= 1 && n <= 4 && seq.len() >= pos + 1 + n, "malformed DER length");
+        ensure!(
+            (1..=4).contains(&n) && seq.len() >= pos + 1 + n,
+            "malformed DER length"
+        );
         let mut len = 0usize;
         for &b in &seq[pos + 1..pos + 1 + n] {
             len = (len << 8) | b as usize;
@@ -194,7 +202,13 @@ pub fn open(enc: &[u8], wrapped: &[u8], info: &[u8], sk_rm: &Scalar) -> Result<V
     let shared: SharedSecret = diffie_hellman(&sk, enc_point.as_affine());
     let pkr = public_key_uncompressed(sk_rm)
         .ok_or_else(|| anyhow!("recipient secret scalar must be non-zero"))?;
-    open_ss(shared.raw_secret_bytes().as_slice(), enc, &pkr, wrapped, info)
+    open_ss(
+        shared.raw_secret_bytes().as_slice(),
+        enc,
+        &pkr,
+        wrapped,
+        info,
+    )
 }
 
 /// Uncompressed SEC1 encoding (`0x04 || x || y`) of the public key matching
@@ -248,8 +262,8 @@ fn open_ss(z: &[u8], enc: &[u8], pkr: &[u8], wrapped: &[u8], info: &[u8]) -> Res
 pub fn unwrap_fcs_key(auth_data: &[u8], key_pem: &[u8]) -> Result<Vec<u8>> {
     let response = find_auth_value(auth_data, b"com.apple.wkms.fcs-response")
         .ok_or_else(|| anyhow!("auth data has no com.apple.wkms.fcs-response entry"))?;
-    let json: serde_json::Value = serde_json::from_slice(response)
-        .map_err(|e| anyhow!("fcs-response is not JSON: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_slice(response).map_err(|e| anyhow!("fcs-response is not JSON: {e}"))?;
     let enc_b64 = json
         .get("enc-request")
         .and_then(|v| v.as_str())
@@ -309,10 +323,14 @@ mod tests {
         let hpke_id: &[u8] = b"HPKE\x00\x10\x00\x01\x00\x01";
         let info = unhex("4f6465206f6e2061204772656369616e2055726e");
         let sk_rm = unhex("f3ce7fdae57e1a310d87f1ebbde6f328be0a99cdbcadf4d6589cf29de4b8ffd2");
-        let enc = unhex("04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b32\
-                        5ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4");
-        let want_ss = unhex("c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8\
-                             cb8");
+        let enc = unhex(
+            "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b32\
+                        5ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4",
+        );
+        let want_ss = unhex(
+            "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8\
+                             cb8",
+        );
         let want_key = unhex("868c066ef58aae6dc589b6cfdd18f97e");
         let want_nonce = unhex("4e0bc5018beba4bf004cca59");
 
@@ -332,8 +350,10 @@ mod tests {
         let ks_ctx = [&[0u8][..], &psk_id_hash[..], &info_hash[..]].concat();
         assert_eq!(
             ks_ctx,
-            unhex("00b88d4e6d91759e65e87c470e8b9141113e9ad5f0c8ceefc1e088c82e6980500798e4\
-                   86f9c9c09c9b5c753ac72d6005de254c607d1b534ed11d493ae1c1d9ac85")
+            unhex(
+                "00b88d4e6d91759e65e87c470e8b9141113e9ad5f0c8ceefc1e088c82e6980500798e4\
+                   86f9c9c09c9b5c753ac72d6005de254c607d1b534ed11d493ae1c1d9ac85"
+            )
         );
         let secret = labeled_extract(hpke_id, &ss, b"secret", b"");
         assert_eq!(
@@ -362,13 +382,9 @@ mod tests {
         let auth = &data[12..12 + auth_len];
         let key = unwrap_fcs_key(auth, &pem).expect("FCS key unwrap");
         assert_eq!(
-            hex(&key),
+            crate::sigverify::hex(&key),
             "387391212f2007c57da75e2b1fc14b1b901ec35d36c30fd21ad61740ece286fd"
         );
-    }
-
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
     #[test]

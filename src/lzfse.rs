@@ -78,10 +78,14 @@ mod lz {
     pub fn lz_decode(src: &[u8], dst: &mut [u8]) -> Result<()> {
         let written = SCRATCH.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
+            // SAFETY: the FFI reads only the algorithm id; no pointers are involved.
             let needed = unsafe { compression_decode_scratch_buffer_size(COMPRESSION_LZFSE) };
             if scratch.len() < needed {
                 scratch.resize(needed.max(1), 0);
             }
+            // SAFETY: dst and src are contiguous Rust slices and scratch holds at
+            // least the advertised scratch size, matching the contract of
+            // compression_decode_buffer.
             unsafe {
                 compression_decode_buffer(
                     dst.as_mut_ptr(),

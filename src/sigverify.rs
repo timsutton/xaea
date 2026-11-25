@@ -55,7 +55,7 @@ fn short_name(der: &[u8]) -> String {
         hex(&der[der.len().saturating_sub(4)..])
     )
 }
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter()
         .fold(String::with_capacity(b.len() * 2), |mut s, c| {
             let _ = write!(s, "{c:02x}");
