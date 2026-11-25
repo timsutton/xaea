@@ -1,6 +1,6 @@
 # Toolchain image for scripts/linux.sh. The repo isn't copied in; it's mounted
 # at run time. Keep the Rust version in step with RUST_VERSION in CI.
-FROM rust:1.100.0-bookworm
+FROM rust:1.100.0-trixie
 # python3-cryptography: needed by the synthetic-AEA tests.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-cryptography \
