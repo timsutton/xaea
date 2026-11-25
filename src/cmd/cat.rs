@@ -4,7 +4,7 @@ use super::open_archive;
 use crate::aa::{Piece, Record, Sink, Stream};
 use crate::cli::CatArgs;
 use crate::envelope::{Checksum, Envelope};
-use crate::exit::{Exit, WithExit, bail_exit};
+use crate::exit::{Exit, WithExit};
 use crate::extract::decode::{SegInfo, decode_segment};
 use crate::extract::paths::sanitize;
 use crate::extract::verify_upfront;
@@ -25,15 +25,8 @@ pub fn run(args: &CatArgs) -> Result<()> {
     // same member.
     let want = sanitize(args.member.as_bytes()).with_exit(Exit::Usage)?;
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map).with_exit(Exit::Rejected)?;
-    if env.profile.encrypted() {
-        bail_exit!(
-            Exit::Rejected,
-            "profile {} is encrypted: cat supports profile 0 only \
-             (encrypted profiles are inspect-only)",
-            env.profile.id()
-        );
-    }
+    super::refuse_disk_image(&archive.map, "cat")?;
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     // The pipeline (up-front authenticity gates, decode, parse, print) is
     // tagged with the extraction exit class, same as `extract`.
     pipeline(&env, &archive.src.path, &want, args).with_exit(Exit::Extraction)

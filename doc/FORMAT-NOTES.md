@@ -181,3 +181,66 @@ by hand and reading them back through the kernel (`src/decmpfs.rs`):
 * **Gotcha:** the kernel checks xattr writes against the *file's mode*, not
   the fd's open mode, so a 0444 file refuses `fsetxattr` with EACCES even on
   a writable fd. Apply the mode after storing.
+
+## Profile 1: restore-image disk images
+
+iOS and macOS restore images (IPSWs, e.g. `iPhone17,3_27.2.1_24B156` and
+`UniversalMac_27.2.1_26B131`) ship their large disk images as
+`<part>.dmg.aea`, stored uncompressed in the IPSW zip. They are profile 1,
+`hkdf_sha256_aesctr_hmac__symmetric__none`. Everything below was verified
+against two of them (248 MiB with 1 cluster, and 2.25 GiB with 24 clusters)
+and checked against `aea decrypt` from both directions. xaea's output is
+byte-identical to Apple's, and Apple's tool accepts the synthetic archive
+that `scripts/make_test_aea.py --profile1` builds when the builder uses
+Apple's geometry. (`aea` refuses the builder's default of 2 segments per
+cluster; the format allows it.)
+
+### Differences from profile 0
+
+* **No signature, no key section.** The 32-byte main salt follows the auth
+  data directly.
+* **Main key:** IKM = the 32-byte symmetric key, salt = the main salt,
+  info = `"AEA_AMK" || file[4..8]` (no signing key).
+* **80-byte keys.** The root-header (`AEA_RHEK`), cluster-header (`AEA_CHEK`)
+  and segment (`AEA_SK` || u32le local index) keys are HKDF-expanded to 80
+  bytes: `MAC key (32) || AES-256 key (32) || CTR IV (16)`. HKDF output is a
+  prefix stream, so the MAC third equals the 32-byte key profile 0 derives
+  from the same info. The counter is AES-256-CTR, a 128-bit big-endian
+  counter starting at the IV.
+* **Encrypt-then-MAC.** The root header, each cluster's segment-header list
+  (padded to capacity, as in profile 0) and each segment's stored bytes are
+  encrypted. Every MAC covers the ciphertext with the same layouts as
+  profile 0. Segment checksums are still SHA-256 of the decompressed
+  plaintext. Check the root MAC before decrypting: a wrong key fails there.
+* **Compression:** `e` = LZFSE, one raw `bvx2` stream per segment, in 1 MiB
+  segments with 256 per cluster. The payload is itself a compressed UDIF DMG
+  or a raw APFS image, so most segments are stored (comp == orig).
+* **The payload is a disk image,** not an AA01 stream.
+
+### Padding (not in kinnay's spec)
+
+`encarchive_size` (= file size, a MiB multiple) leaves random padding after
+the last segment: 4.0 MiB and 38.7 MiB on the two archives. It is
+authenticated: the last cluster's next-cluster-MAC slot holds
+
+    HMAC-SHA256(HKDF(main_key, "", "AEA_PAK"), padding)
+
+This is a **plain** HMAC, without the `salt || data || u64le(len(salt))`
+framing of every other MAC. Found by probing `aea encrypt -padding 16|64k`
+output; with `-padding none` the slot is filled but not checked (as with
+profile 0's "garbage" last slot). `aea decrypt` rejects a wrong padding MAC
+("authenticating padding").
+
+### The key: WKMS auth data
+
+| auth key | value |
+|---|---|
+| `com.apple.wkms.fcs-response` | JSON: base64 `enc-request` (65-byte P-256 point), `wrapped-key` (32 + 16 bytes) |
+| `com.apple.wkms.fcs-key-url` | `https://wkms-public.apple.com/fcs-keys/<id>` → 301 to a CDN; an unauthenticated PKCS#8 P-256 private-key PEM |
+| `com.apple.wkms.url`, `com.apple.wkms.auth-data`, `saksKey` | the online key-service request; unused offline |
+
+The wrap is RFC 9180 HPKE in base mode, DHKEM(P-256, HKDF-SHA256) /
+HKDF-SHA256 / AES-256-GCM, with empty `info` and AAD. `<id>` is
+`base64url(SHA-256(uncompressed public point))` of the PEM's key, so a PEM
+can be matched to its archive offline. One PEM served every archive in the
+IPSW we checked.

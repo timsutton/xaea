@@ -1,11 +1,15 @@
 //! Subcommand implementations, and what they share.
 
 pub mod cat;
+pub mod decrypt;
 pub mod extract;
 pub mod inspect;
 
-use crate::exit::{Exit, WithExit};
-use crate::spool;
+use crate::cli::KeyArgs;
+use crate::envelope::{Envelope, NeedsKey, Prelude, WrongKey};
+use crate::exit::{Exit, WithExit, bail_exit};
+use crate::kdf::Key;
+use crate::{spool, wkms};
 use anyhow::{Context, Result};
 use memmap2::Mmap;
 use std::fs::File;
@@ -33,6 +37,59 @@ pub fn open_archive(path: &Path) -> Result<OpenArchive> {
         .context("mmap")
         .with_exit(Exit::Unreadable)?;
     Ok(OpenArchive { src, map })
+}
+
+/// The symmetric key `key` asks for, if any; every failure is [`Exit::Key`].
+pub fn archive_key(key: &KeyArgs, prelude: &Prelude) -> Result<Option<Key>> {
+    if let Some(k) = &key.key {
+        return wkms::parse_key(k)
+            .context("--key")
+            .with_exit(Exit::Key)
+            .map(Some);
+    }
+    let Some(pem) = &key.key_pem else {
+        return Ok(None);
+    };
+    let pem = std::fs::read(pem)
+        .with_context(|| format!("read --key-pem {}", pem.display()))
+        .with_exit(Exit::Key)?;
+    wkms::unwrap_key(&prelude.auth, &pem)
+        .context("unwrap the archive key with --key-pem")
+        .with_exit(Exit::Key)
+        .map(Some)
+}
+
+/// Parse `file`'s envelope with the key `key` asks for. A missing or wrong
+/// key is [`Exit::Key`]; any other parse failure is [`Exit::Rejected`].
+pub fn parse_envelope<'a>(file: &'a [u8], key: &KeyArgs) -> Result<Envelope<'a>> {
+    let prelude = Prelude::parse(file).with_exit(Exit::Rejected)?;
+    let sym = archive_key(key, &prelude)?;
+    if sym.is_some() && !prelude.profile.encrypted() {
+        eprintln!("warning: archive is not encrypted; ignoring the key");
+    }
+    Envelope::parse(file, sym.as_ref()).map_err(|e| {
+        let exit = if e.is::<NeedsKey>() || e.is::<WrongKey>() {
+            Exit::Key
+        } else {
+            Exit::Rejected
+        };
+        crate::exit::classify(exit, e)
+    })
+}
+
+/// Refuse an encrypted archive in the commands that read the payload as a
+/// file archive: what restore images encrypt is a disk image.
+pub fn refuse_disk_image(file: &[u8], cmd: &str) -> Result<()> {
+    let prelude = Prelude::parse(file).with_exit(Exit::Rejected)?;
+    if prelude.profile.encrypted() {
+        bail_exit!(
+            Exit::Rejected,
+            "profile {} is encrypted: such archives (restore images) hold a disk image, not \
+             a file tree, so `{cmd}` does not apply — use `xaea decrypt` to write the image",
+            prelude.profile.id()
+        );
+    }
+    Ok(())
 }
 
 /// `n` bytes in binary units with two decimals, e.g. `9.71 GiB`.

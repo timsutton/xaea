@@ -6,7 +6,7 @@
 //!
 //! Classes exercised with synthetic inputs: success (0), usage (2),
 //! unreadable input (3), rejected archive (4), verification failure (5),
-//! extraction failure (6). The 5/6 split needs the fully signed synthetic
+//! extraction failure (6), key failure (7). The 5/6 split needs the fully signed synthetic
 //! archive from scripts/make_test_aea.py (same builder tests/e2e.rs uses);
 //! those tests skip when python3 or its `cryptography` package is missing.
 
@@ -265,6 +265,38 @@ fn extraction_failures_exit_6() {
         code(&["inspect", truncated.to_str().unwrap()]),
         4,
         "truncated archive"
+    );
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn key_failures_exit_7() {
+    // An encrypted (profile 1) archive: no key, or one that does not open it.
+    let Some(dir) = build_archive("key7", &["--profile1"]) else {
+        return;
+    };
+    let aea = dir.join("p1.aea");
+    let aea = aea.to_str().unwrap();
+    let out = dir.join("out.bin");
+    let out = out.to_str().unwrap();
+    let wrong = format!("hex:{}", "00".repeat(32));
+    assert_eq!(code(&["decrypt", aea, out]), 7, "no key");
+    assert_eq!(
+        code(&["decrypt", aea, out, "--key", &wrong]),
+        7,
+        "wrong key"
+    );
+    let other = dir.join("p1-other.pem");
+    assert_eq!(
+        code(&["decrypt", aea, out, "--key-pem", other.to_str().unwrap()]),
+        7,
+        "PEM that does not unwrap the key"
+    );
+    let good = dir.join("p1-key.pem");
+    assert_eq!(
+        code(&["decrypt", aea, out, "--key-pem", good.to_str().unwrap()]),
+        0,
+        "the right PEM"
     );
     fs::remove_dir_all(dir).ok();
 }

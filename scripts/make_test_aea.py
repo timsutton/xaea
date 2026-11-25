@@ -9,8 +9,9 @@ on a segment boundary, empty files, unicode + spaced + `..`-escape paths,
 symlinks, non-default modes, and a self-signed P-256 signing certificate
 whose key is bound into the main-key KDF info.
 
-Usage: make_test_aea.py OUTPUT_DIR [--seed N] [--evil] [--tamper]
-Writes OUT/archive.aea and OUT/manifest.json.
+Usage: make_test_aea.py OUTPUT_DIR [--seed N] [--evil] [--tamper] [--profile1]
+Writes OUT/archive.aea and OUT/manifest.json. --profile1 also writes an
+encrypted restore-image-style archive (see build_profile1).
 """
 import argparse
 import datetime
@@ -506,6 +507,154 @@ def build_tamper(outdir: Path, seed: int) -> None:
     print(f"tamper: {len(cases)} corrupt variants written")
 
 
+# ---- profile 1: symmetric encryption, as in restore-image .dmg.aea files --
+
+def hkdf_n(ikm: bytes, info: bytes, n: int, salt: bytes = b"") -> bytes:
+    return HKDF(algorithm=hashes.SHA256(), length=n, salt=salt,
+                info=info).derive(ikm)
+
+
+def ctr(keys: bytes, data: bytes) -> bytes:
+    """AES-256-CTR under an 80-byte `mac || aes || iv` expansion."""
+    from cryptography.hazmat.primitives.ciphers import (Cipher, algorithms,
+                                                        modes)
+    enc = Cipher(algorithms.AES(keys[32:64]), modes.CTR(keys[64:80])).encryptor()
+    return enc.update(data) + enc.finalize()
+
+
+def hpke_seal(pk_r: bytes, plaintext: bytes, eph) -> tuple[bytes, bytes]:
+    """RFC 9180 base-mode seal, DHKEM(P-256)/HKDF-SHA256/AES-256-GCM, empty
+    info and AAD: what Apple's WKMS uses to wrap an archive key."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    def lext(sid, salt, label, ikm):
+        return hmac.new(salt or b"\0" * 32, b"HPKE-v1" + sid + label + ikm,
+                        hashlib.sha256).digest()
+
+    def lexp(sid, prk, label, info, n):
+        info = struct.pack(">H", n) + b"HPKE-v1" + sid + label + info
+        out, t, i = b"", b"", 1
+        while len(out) < n:
+            t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+            out, i = out + t, i + 1
+        return out[:n]
+
+    enc = eph.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint)
+    dh = eph.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(
+        ec.SECP256R1(), pk_r))
+    kem = b"KEM" + struct.pack(">H", 0x10)
+    shared = lexp(kem, lext(kem, b"", b"eae_prk", dh), b"shared_secret",
+                  enc + pk_r, 32)
+    sid = b"HPKE" + struct.pack(">HHH", 0x10, 1, 2)
+    ctx = b"\0" + lext(sid, b"", b"psk_id_hash", b"") \
+        + lext(sid, b"", b"info_hash", b"")
+    secret = lext(sid, shared, b"secret", b"")
+    key = lexp(sid, secret, b"key", ctx, 32)
+    nonce = lexp(sid, secret, b"base_nonce", ctx, 12)
+    return enc, AESGCM(key).encrypt(nonce, plaintext, None)
+
+
+def p256_key(rng_state: bytes, label: bytes):
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+    d = int.from_bytes(prand(rng_state + label, 40), "big") % (order - 1) + 1
+    return ec.derive_private_key(d, ec.SECP256R1())
+
+
+def build_profile1(outdir: Path, seed: int) -> None:
+    """An encrypted, unsigned profile-1 archive shaped like Apple's restore
+    images: a disk-image-like payload (not an AA01 stream) in LZMA and
+    stored segments, an all-zero segment,
+    multi-cluster with the padded last cluster, random padding up to
+    encarchive_size, and the key HPKE-wrapped for a PEM whose
+    base64url(SHA-256(point)) names the key URL.
+
+    Writes p1.aea, p1.payload (the expected plaintext), p1-key.pem (the
+    unwrapping key), p1-other.pem (a key that does not unwrap it) and
+    p1.json (the symmetric key, base64)."""
+    import base64
+    rng = hashlib.sha256(f"xaea-test-{seed}-p1".encode()).digest()
+    payload = (b"\x00" * SEG                              # all-zero segment
+               + b"".join(b"block %08d " % i for i in range(9000))
+               + prand(rng + b"rand", SEG + 123))          # stored as-is
+    segs = [payload[i:i + SEG] for i in range(0, len(payload), SEG)]
+    stored = []
+    for s in segs:
+        c = lzma.compress(s, format=lzma.FORMAT_XZ)
+        stored.append(c if len(c) < len(s) else s)
+    nsegs = len(segs)
+    assert nsegs > SPC and any(len(c) == len(s) for c, s in zip(stored, segs))
+
+    key = prand(rng + b"key", 32)
+    salt = prand(rng + b"salt", 32)
+    hdr4_8 = b"\x01\x00\x00\x00"
+    mainkey = hkdf(key, salt, b"AEA_AMK" + hdr4_8)
+
+    wkms = p256_key(rng, b"wkms")
+    point = wkms.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint)
+    enc, wrapped = hpke_seal(point, key, p256_key(rng, b"eph"))
+    url = ("https://example.invalid/fcs-keys/"
+           + base64.urlsafe_b64encode(hashlib.sha256(point).digest()).decode())
+    resp = json.dumps({"enc-request": base64.b64encode(enc).decode(),
+                       "wrapped-key": base64.b64encode(wrapped).decode()})
+    pairs = [(b"com.apple.wkms.fcs-response", resp.encode()),
+             (b"com.apple.wkms.fcs-key-url", url.encode())]
+    auth = b"".join(u(4, 4 + 1 + len(k) + len(v)) + k + b"\x00" + v
+                    for k, v in pairs)
+
+    nclusters = -(-nsegs // SPC)
+    head = 12 + len(auth) + 32 + 32 + 48 + 32
+    body = sum(CAP * 72 + 32 for _ in range(nclusters)) + sum(map(len, stored))
+    total = -(-(head + body) // SEG) * SEG + SEG    # pad: >= one more SEG
+    roothdr = struct.pack("<QQII", len(payload), total, SEG, SPC) \
+        + b"x" + b"\x02" + b"\x00" * 22
+
+    # The padding is authenticated by a plain HMAC under AEA_PAK, stored in
+    # the last cluster's next-chmac slot.
+    padding = prand(rng + b"pad", total - head - body)
+    blobs = [b""] * nclusters
+    chmac = hmac.new(hkdf(mainkey, b"", b"AEA_PAK"), padding,
+                     hashlib.sha256).digest()
+    for k in reversed(range(nclusters)):
+        lo, hi = k * SPC, min((k + 1) * SPC, nsegs)
+        ck = hkdf(mainkey, b"", b"AEA_CK" + u(4, k))
+        chek = hkdf_n(ck, b"AEA_CHEK", 80)
+        data, macs, hdrs = b"", b"", b""
+        for i in range(lo, hi):
+            sk = hkdf_n(ck, b"AEA_SK" + u(4, i - lo), 80)
+            ct = ctr(sk, stored[i])
+            data += ct
+            macs += mac(sk[:32], ct)
+            hdrs += u(4, len(segs[i])) + u(4, len(stored[i])) \
+                + hashlib.sha256(segs[i]).digest()
+        hdrs += b"\x00" * (CAP - (hi - lo)) * 40
+        macs += b"\x00" * (CAP - (hi - lo)) * 32
+        hdrs_ct = ctr(chek, hdrs)
+        chmac_k = mac(chek[:32], hdrs_ct, chmac + macs)
+        blobs[k] = hdrs_ct + chmac + macs + data
+        chmac = chmac_k
+    rk = hkdf_n(mainkey, b"AEA_RHEK", 80)
+    root_ct = ctr(rk, roothdr)
+    rootmac = mac(rk[:32], root_ct, chmac + auth)
+
+    file = b"AEA1" + hdr4_8 + u(4, len(auth)) + auth + salt + rootmac \
+        + root_ct + chmac + b"".join(blobs) + padding
+    assert len(file) == total
+    (outdir / "p1.aea").write_bytes(file)
+    (outdir / "p1.payload").write_bytes(payload)
+    for name, k in [("p1-key.pem", wkms), ("p1-other.pem", p256_key(rng, b"x"))]:
+        (outdir / name).write_bytes(k.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()))
+    (outdir / "p1.json").write_text(json.dumps({
+        "key": base64.b64encode(key).decode(), "segments": nsegs,
+        "original_size": len(payload), "padding": len(padding)}))
+    print(f"p1.aea: {total} bytes, {nsegs} segments, {nclusters} clusters")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir", type=Path)
@@ -516,6 +665,8 @@ if __name__ == "__main__":
                     help="also build links.aea with N link records")
     ap.add_argument("--tamper", action="store_true",
                     help="also build corrupt-signature variants + tamper.json")
+    ap.add_argument("--profile1", action="store_true",
+                    help="also build the encrypted p1.aea (see build_profile1)")
     a = ap.parse_args()
     build(a.outdir, a.seed)
     if a.evil:
@@ -524,3 +675,5 @@ if __name__ == "__main__":
         build_links(a.outdir, a.seed, a.links)
     if a.tamper:
         build_tamper(a.outdir, a.seed)
+    if a.profile1:
+        build_profile1(a.outdir, a.seed)

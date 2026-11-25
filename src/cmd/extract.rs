@@ -22,15 +22,8 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
     // `archive.src` (for `-`, the spool) must outlive extract(), which
     // re-opens the path for its pread segment reads.
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map).with_exit(Exit::Rejected)?;
-    if env.profile.encrypted() {
-        bail_exit!(
-            Exit::Rejected,
-            "profile {} is encrypted: extraction supports profile 0 only \
-             (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
-            env.profile.id()
-        );
-    }
+    super::refuse_disk_image(&archive.map, "extract")?;
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     // No up-front "dir must be empty" check any more: extracting into a
     // populated directory (the cwd, by default) is fine. Collisions with
     // the archive's own top-level entries are caught by the extractor

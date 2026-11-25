@@ -63,7 +63,7 @@ fn hex(b: &[u8]) -> String {
         })
 }
 
-fn base64_decode(b: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn base64_decode(b: &[u8]) -> Result<Vec<u8>> {
     // minimal base64 decoder (standard alphabet)
     fn val(c: u8) -> Result<u32> {
         Ok(match c {

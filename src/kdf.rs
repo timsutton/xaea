@@ -10,11 +10,56 @@ use sha2::Sha256;
 pub type Key = [u8; 32];
 
 fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> Key {
-    let mut okm = [0u8; 32];
+    hkdf_n(ikm, salt, info)
+}
+
+fn hkdf_n<const N: usize>(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; N] {
+    let mut okm = [0u8; N];
     hkdf::Hkdf::<Sha256>::new(Some(salt), ikm)
         .expand(info, &mut okm)
         .expect("HKDF expand of fixed size cannot fail");
     okm
+}
+
+/// The key material of an encrypting profile's root header, cluster
+/// header or segment: the same HKDF expansion as the MAC-only key, just
+/// 80 bytes long — `MAC key (32) || AES-256 key (32) || CTR IV (16)`.
+/// HKDF output is a prefix stream, so `mac` equals the 32-byte key the
+/// MAC-only functions below derive from the same info.
+#[derive(Clone, Copy)]
+pub struct CipherKeys {
+    pub mac: Key,
+    pub aes: [u8; 32],
+    pub iv: [u8; 16],
+}
+
+impl CipherKeys {
+    fn expand(ikm: &[u8], info: &[u8]) -> Self {
+        let okm: [u8; 80] = hkdf_n(ikm, b"", info);
+        let (mac, rest) = okm.split_at(32);
+        let (aes, iv) = rest.split_at(32);
+        CipherKeys {
+            mac: mac.try_into().expect("32 bytes"),
+            aes: aes.try_into().expect("32 bytes"),
+            iv: iv.try_into().expect("16 bytes"),
+        }
+    }
+
+    /// AES-256-CTR (128-bit big-endian counter starting at the IV) over
+    /// `buf` in place; decryption and encryption are the same operation.
+    pub fn apply_ctr(&self, buf: &mut [u8]) {
+        use aes::cipher::{KeyIvInit, StreamCipher};
+        ctr::Ctr128BE::<aes::Aes256>::new(&self.aes.into(), &self.iv.into()).apply_keystream(buf);
+    }
+
+    /// [`Self::apply_ctr`] from `input` into `out` (same length), fusing
+    /// the copy out of the archive map with the decryption. Panics if the
+    /// lengths differ.
+    pub fn apply_ctr_b2b(&self, input: &[u8], out: &mut [u8]) {
+        use aes::cipher::{KeyIvInit, StreamCipher};
+        ctr::Ctr128BE::<aes::Aes256>::new(&self.aes.into(), &self.iv.into())
+            .apply_keystream_b2b(input, out);
+    }
 }
 
 /// `prefix || index` (little-endian), the info string of the indexed keys.
@@ -43,6 +88,36 @@ pub fn main_key(ikm: &[u8], main_salt: &[u8], header_4_8: &[u8], signing_point: 
 
 pub fn root_header_key(main_key: &Key) -> Key {
     hkdf(main_key, b"", b"AEA_RHEK")
+}
+
+pub fn root_header_cipher(main_key: &Key) -> CipherKeys {
+    CipherKeys::expand(main_key, b"AEA_RHEK")
+}
+
+pub fn cluster_header_cipher(ck: &Key) -> CipherKeys {
+    CipherKeys::expand(ck, b"AEA_CHEK")
+}
+
+/// Segment cipher keys; `segment_index` is cluster-local, as for
+/// [`segment_key`].
+pub fn segment_cipher(ck: &Key, segment_index: u32) -> CipherKeys {
+    CipherKeys::expand(ck, &indexed_info(b"AEA_SK", segment_index))
+}
+
+/// Padding key. The padding after the last segment is authenticated by a
+/// plain HMAC-SHA256 under this key (no salt/length framing, unlike
+/// [`mac`]), stored in the last cluster's next-cluster-MAC slot. Found by
+/// probing Apple's `aea encrypt -padding` output; verified on restore
+/// images.
+pub fn padding_key(main_key: &Key) -> Key {
+    hkdf(main_key, b"", b"AEA_PAK")
+}
+
+/// Plain HMAC-SHA256 (the padding MAC).
+pub fn hmac_plain(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut m = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key size");
+    m.update(data);
+    m.finalize().into_bytes().into()
 }
 
 pub fn cluster_key(main_key: &Key, cluster_index: u32) -> Key {
@@ -104,6 +179,27 @@ mod tests {
         assert_eq!(tohex(&segment_key(&ck, 0)), SEG0);
         // local index must matter
         assert_ne!(segment_key(&ck, 0), segment_key(&ck, 1));
+    }
+
+    #[test]
+    fn cipher_keys_extend_the_mac_keys() {
+        // The MAC third of each 80-byte expansion is the 32-byte key.
+        let mk = [3u8; 32];
+        let ck = cluster_key(&mk, 2);
+        assert_eq!(root_header_cipher(&mk).mac, root_header_key(&mk));
+        assert_eq!(cluster_header_cipher(&ck).mac, cluster_header_key(&ck));
+        assert_eq!(segment_cipher(&ck, 5).mac, segment_key(&ck, 5));
+    }
+
+    #[test]
+    fn ctr_is_an_involution_with_a_big_endian_counter() {
+        let k = segment_cipher(&[9u8; 32], 0);
+        let plain: Vec<u8> = (0..100u8).collect();
+        let mut buf = plain.clone();
+        k.apply_ctr(&mut buf);
+        assert_ne!(buf, plain);
+        k.apply_ctr(&mut buf);
+        assert_eq!(buf, plain);
     }
 
     #[test]
