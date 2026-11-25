@@ -73,8 +73,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: bazelisk build //:xaea
-      - run: bazelisk test --test_output=errors //:tests
+      - name: Cache Bazel repository downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/bazel-repository-cache
+          key: bazel-repository-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', 'scripts/bazel-test-requirements.lock') }}
+          restore-keys: bazel-repository-${{ runner.os }}-${{ runner.arch }}-
+      - run: bazelisk build --repository_cache="$RUNNER_TEMP/bazel-repository-cache" //:xaea
+      - run: bazelisk test --repository_cache="$RUNNER_TEMP/bazel-repository-cache" --test_output=errors //:tests
 
   linux-docker:
     name: Linux Docker image
