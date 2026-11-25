@@ -2,9 +2,8 @@
 
 Install Bazelisk as `bazel` and a native C toolchain (Xcode Command Line Tools
 on macOS, or a C compiler and development headers on Linux). Bazelisk selects
-the version from `.bazelversion` and invokes it through `tools/bazel`. Bazel
-downloads the pinned Rust toolchain and builds the vendored liblzma with the
-native C toolchain.
+the version from `.bazelversion`. Bazel downloads the pinned Rust toolchain
+and builds the vendored liblzma with the native C toolchain.
 
 ```sh
 bazel build //:xaea
