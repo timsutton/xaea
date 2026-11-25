@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+## 0.2.1 - 2026-11-24
+
 ### Added
 
 * `xaea cat <archive> <member>`: write one regular file from an archive to
