@@ -49,21 +49,16 @@ This configuration reads cached outputs and uploads results of local builds.
 ## Remote execution
 
 The `remote_exec` configuration uses the Buildbarn `homelab` instance and
-routes actions to the `ubuntu24-04-v2` Linux Arm64 worker pool. Run it from a
-Linux Arm64 Bazel client with the worker's C toolchain environment. This builds
-a Linux Arm64 binary.
+routes actions to the `ubuntu24-04-v2` Linux Arm64 worker pool. Bazel selects
+Linux Arm64 as both the execution and target platform, including when the
+client runs on macOS. The workers provide GCC 13 and binutils.
 
 ```sh
 bazel build --config=remote_exec //:xaea
 bazel test --config=remote_exec //:tests
 ```
 
-On macOS, run the client in a Linux Arm64 Docker container with the same
-toolchain as the workers. If Buildbarn listens on the Docker Desktop host,
-point both endpoints at the host from the container.
-
-```sh
-bazel build --config=remote_exec \
-  --remote_cache=grpc://host.docker.internal:8980 \
-  --remote_executor=grpc://host.docker.internal:8980 //:xaea
-```
+This profile puts the Linux binary in `bazel-linux-bin` and test logs in
+`bazel-linux-testlogs`. To use a different server with the same worker
+configuration, override `--remote_cache`, `--remote_executor`, and
+`--remote_instance_name` on the command line.

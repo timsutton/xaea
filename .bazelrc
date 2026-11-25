@@ -1,9 +1,10 @@
 build:remote_cache --remote_cache=grpc://localhost:8980
 
-# Use from a Linux Arm64 Bazel client with the worker's toolchain environment.
 build:remote_exec --config=remote_cache
 build:remote_exec --remote_executor=grpc://localhost:8980
 build:remote_exec --remote_instance_name=homelab
-build:remote_exec --remote_default_exec_properties=ISA=aarch64
-build:remote_exec --remote_default_exec_properties=OSFamily=linux
-build:remote_exec --remote_default_exec_properties=pool=ubuntu24-04-v2
+build:remote_exec --platforms=//:remote_linux_arm64
+build:remote_exec --extra_execution_platforms=//:remote_linux_arm64
+build:remote_exec --extra_toolchains=//tools/toolchains:worker_gcc
+build:remote_exec --experimental_platform_in_output_dir
+build:remote_exec --symlink_prefix=bazel-linux-

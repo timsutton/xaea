@@ -9,7 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * Build `xaea` with `bazel build //:xaea` using the existing Cargo manifest
   and lockfile. The [Bazel build guide](doc/BUILDING-WITH-BAZEL.md) also covers
-  optional remote caching and Linux Arm64 remote execution.
+  optional remote caching and Linux Arm64 remote execution from macOS or Linux.
 * Run the unit and integration suites with `bazel test //:tests`.
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.

@@ -3,6 +3,19 @@ load("@rules_python//python:defs.bzl", "py_binary")
 load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test", "rust_test_suite")
 
+platform(
+    name = "remote_linux_arm64",
+    constraint_values = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+    exec_properties = {
+        "ISA": "aarch64",
+        "OSFamily": "linux",
+        "pool": "ubuntu24-04-v2",
+    },
+)
+
 cargo_toml_env_vars(
     name = "package_env",
     src = "Cargo.toml",
