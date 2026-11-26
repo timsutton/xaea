@@ -38,9 +38,11 @@ fixture, use the existing Cargo fixture test with `AEA_FIXTURE` and
 
 To upgrade the Python test dependencies, run
 `bazel run //:test_requirements.run -- --upgrade`. This uses the Bazel-managed
-uv and Python toolchains to regenerate `scripts/bazel-test-requirements.txt`
-from `scripts/bazel-test-requirements.in`. Run the Bazel tests in update mode,
-then commit the refreshed requirements file and any changes to `MODULE.bazel.lock`.
+uv and Python toolchains to regenerate `scripts/uv.lock` from
+`scripts/pyproject.toml`. Run `bazel test //:tests`, then commit the refreshed
+`scripts/uv.lock` and any changes to `MODULE.bazel.lock`.
+When changing the Python minor version in `MODULE.bazel`, update
+`requires-python` in `scripts/pyproject.toml` before regenerating the lockfile.
 
 ## Remote cache
 

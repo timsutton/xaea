@@ -17,18 +17,15 @@ uv.configure()
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
     download_only = True,
-    experimental_index_url = "https://pypi.org/simple/",
     hub_name = "test_python_deps",
     python_version = PYTHON_VERSION,
-    requirements_by_platform = {
-        "//:scripts/bazel-test-requirements.txt": "linux_*,osx_*",
-    },
     target_platforms = [
         "linux_aarch64",
         "linux_x86_64",
         "osx_aarch64",
         "osx_x86_64",
     ],
+    uv_lock = "//:scripts/uv.lock",
 )
 use_repo(pip, "test_python_deps")
 

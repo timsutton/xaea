@@ -57,12 +57,8 @@ rust_test(
 
 lock(
     name = "test_requirements",
-    srcs = ["scripts/bazel-test-requirements.in"],
-    out = "scripts/bazel-test-requirements.txt",
-    args = [
-        "--no-annotate",
-        "--no-header",
-    ],
+    srcs = ["scripts/pyproject.toml"],
+    out = "scripts/uv.lock",
 )
 
 py_binary(
