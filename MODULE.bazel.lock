@@ -2060,6 +2060,183 @@
           }
         }
       }
+    },
+    "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
+      "general": {
+        "bzlTransitiveDigest": "mGz7FaEX9Esf98eAsVtKx0T57pn5XeRvIxtIGwa8D38=",
+        "usagesDigest": "vD4NBsh5cIWs2e0NJGvApu3hom0S7OIAZVNdd2flpaM=",
+        "recordedInputs": [
+          "REPO_MAPPING:apple_support+,bazel_skylib bazel_skylib+",
+          "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
+          "REPO_MAPPING:bazel_features+,bazel_features_version bazel_features++version_extension+bazel_features_version",
+          "REPO_MAPPING:rules_cc+,bazel_features bazel_features+",
+          "REPO_MAPPING:rules_cc+,bazel_skylib bazel_skylib+",
+          "REPO_MAPPING:rules_cc+,bazel_tools bazel_tools",
+          "REPO_MAPPING:rules_cc+,cc_compatibility_proxy rules_cc++compatibility_proxy+cc_compatibility_proxy",
+          "REPO_MAPPING:rules_cc+,platforms platforms",
+          "REPO_MAPPING:rules_cc+,rules_cc rules_cc+",
+          "REPO_MAPPING:rules_cc++compatibility_proxy+cc_compatibility_proxy,rules_cc rules_cc+",
+          "REPO_MAPPING:rules_rust+,apple_support apple_support+",
+          "REPO_MAPPING:rules_rust+,bazel_features bazel_features+",
+          "REPO_MAPPING:rules_rust+,bazel_skylib bazel_skylib+",
+          "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
+          "REPO_MAPPING:rules_rust+,cui rules_rust++cu+cui",
+          "REPO_MAPPING:rules_rust+,rrc rules_rust++i2+rrc",
+          "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
+          "REPO_MAPPING:rules_rust+,rules_rust rules_rust+"
+        ],
+        "generatedRepoSpecs": {
+          "cargo_bazel_bootstrap": {
+            "repoRuleId": "@@rules_rust+//cargo/private:cargo_bootstrap.bzl%cargo_bootstrap_repository",
+            "attributes": {
+              "srcs": [
+                "@@rules_rust+//crate_universe:src/api.rs",
+                "@@rules_rust+//crate_universe:src/api/lockfile.rs",
+                "@@rules_rust+//crate_universe:src/cli.rs",
+                "@@rules_rust+//crate_universe:src/cli/generate.rs",
+                "@@rules_rust+//crate_universe:src/cli/query.rs",
+                "@@rules_rust+//crate_universe:src/cli/render.rs",
+                "@@rules_rust+//crate_universe:src/cli/splice.rs",
+                "@@rules_rust+//crate_universe:src/cli/vendor.rs",
+                "@@rules_rust+//crate_universe:src/config.rs",
+                "@@rules_rust+//crate_universe:src/config/label_injection.rs",
+                "@@rules_rust+//crate_universe:src/context.rs",
+                "@@rules_rust+//crate_universe:src/context/crate_context.rs",
+                "@@rules_rust+//crate_universe:src/context/platforms.rs",
+                "@@rules_rust+//crate_universe:src/lib.rs",
+                "@@rules_rust+//crate_universe:src/lockfile.rs",
+                "@@rules_rust+//crate_universe:src/main.rs",
+                "@@rules_rust+//crate_universe:src/metadata.rs",
+                "@@rules_rust+//crate_universe:src/metadata/cargo_bin.rs",
+                "@@rules_rust+//crate_universe:src/metadata/cargo_tree_resolver.rs",
+                "@@rules_rust+//crate_universe:src/metadata/cargo_tree_rustc_wrapper.bat",
+                "@@rules_rust+//crate_universe:src/metadata/cargo_tree_rustc_wrapper.sh",
+                "@@rules_rust+//crate_universe:src/metadata/dependency.rs",
+                "@@rules_rust+//crate_universe:src/metadata/metadata_annotation.rs",
+                "@@rules_rust+//crate_universe:src/rendering.rs",
+                "@@rules_rust+//crate_universe:src/rendering/template_engine.rs",
+                "@@rules_rust+//crate_universe:src/rendering/templates/defs_bzl_shim.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/module_bzl.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/partials/header.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/partials/module/aliases_map.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/partials/module/deps_map.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/partials/module/repo_git.j2",
+                "@@rules_rust+//crate_universe:src/rendering/templates/partials/module/repo_http.j2",
+                "@@rules_rust+//crate_universe:src/rendering/verbatim/alias_rules.bzl",
+                "@@rules_rust+//crate_universe:src/select.rs",
+                "@@rules_rust+//crate_universe:src/splicing.rs",
+                "@@rules_rust+//crate_universe:src/splicing/cargo_config.rs",
+                "@@rules_rust+//crate_universe:src/splicing/crate_index_lookup.rs",
+                "@@rules_rust+//crate_universe:src/splicing/splicer.rs",
+                "@@rules_rust+//crate_universe:src/test.rs",
+                "@@rules_rust+//crate_universe:src/utils.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/glob.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/label.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/select.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/select_dict.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/select_list.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/select_scalar.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/select_set.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/serialize.rs",
+                "@@rules_rust+//crate_universe:src/utils/starlark/target_compatible_with.rs",
+                "@@rules_rust+//crate_universe:src/utils/symlink.rs",
+                "@@rules_rust+//crate_universe:src/utils/target_triple.rs"
+              ],
+              "binary": "cargo-bazel",
+              "cargo_lockfile": "@@rules_rust+//crate_universe:Cargo.lock",
+              "cargo_toml": "@@rules_rust+//crate_universe:Cargo.toml",
+              "version": "1.99.1",
+              "rust_toolchain_cargo_template": "@rust_host_tools//:bin/{tool}",
+              "rust_toolchain_rustc_template": "@rust_host_tools//:bin/{tool}",
+              "compressed_windows_toolchain_names": false,
+              "timeout": 900
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [
+            "cargo_bazel_bootstrap"
+          ],
+          "explicitRootModuleDirectDevDeps": [],
+          "useAllRepos": "NO",
+          "reproducible": false
+        }
+      }
+    },
+    "@@windows_support+//windows:extensions.bzl%msvc_runtime": {
+      "general": {
+        "bzlTransitiveDigest": "Svm+Q8YvGZn7iW+lMM238OdSPl7wASLxUQhyUwQj/IA=",
+        "usagesDigest": "pHNWe3f9rBa8zIRv+R1xo2iP5mTDXlqci6FB4mOWFeo=",
+        "recordedInputs": [
+          "REPO_MAPPING:windows_support+,bazel_tools bazel_tools"
+        ],
+        "generatedRepoSpecs": {
+          "msvc_runtime": {
+            "repoRuleId": "@@windows_support+//windows/private/extensions:msvc_runtime.bzl%_msvc_runtime_repository",
+            "attributes": {
+              "msvc_version": "14.50.35717",
+              "architectures": [
+                "x64",
+                "arm64"
+              ],
+              "installer_manifest_url": "https://download.visualstudio.microsoft.com/download/pr/fdc37f6e-59f6-4054-838a-b476eeaa6ec3/1d82370739911457e0a2f6be15d8b5f569531b352b2eabb961429eea1e99e356/VisualStudio.vsman",
+              "installer_manifest_integrity": "sha256-qOhU+p8/uurCfXME4pfxZg1xN0ATid61fPeYPzPBb+8="
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [],
+          "explicitRootModuleDirectDevDeps": [
+            "msvc_runtime"
+          ],
+          "useAllRepos": "NO",
+          "reproducible": false
+        }
+      }
+    },
+    "@@windows_support+//windows:extensions.bzl%windows_sdk": {
+      "general": {
+        "bzlTransitiveDigest": "Svm+Q8YvGZn7iW+lMM238OdSPl7wASLxUQhyUwQj/IA=",
+        "usagesDigest": "uv1fbjQ1s59VQbFMhyL/kmP3LNaDLoK7IflnvYak1eg=",
+        "recordedInputs": [
+          "REPO_MAPPING:windows_support+,bazel_tools bazel_tools"
+        ],
+        "generatedRepoSpecs": {
+          "windows_sdk": {
+            "repoRuleId": "@@windows_support+//windows/private/extensions:windows_sdk.bzl%_windows_sdk_repository",
+            "attributes": {
+              "windows_sdk_version": "10.0.26100.7705",
+              "windows_sdk_integrity": {
+                "Microsoft.Windows.SDK.CPP": "sha256-/0VWYL7gcadEcVqWZWZvopwHaBV509gVlZqe7FpVZCQ=",
+                "Microsoft.Windows.SDK.CPP.x64": "sha256-rWzpD/lAEGmdKVSLPCseUsieuBFD4hmRVdmlw4ABtSs=",
+                "Microsoft.Windows.SDK.CPP.arm64": "sha256-A7wMA9Q5zvhQdLvNQl+dXTptO0Z5Z6zSHaO6bf7q+mc="
+              },
+              "transformations": {
+                "base/c/Include/10.0.26100.0/shared/driverspecs.h": "base/c/Include/10.0.26100.0/shared/DriverSpecs.h",
+                "base/c/Include/10.0.26100.0/shared/specstrings.h": "base/c/Include/10.0.26100.0/shared/SpecStrings.h",
+                "base/c/Include/10.0.26100.0/um/ole2.h": "base/c/Include/10.0.26100.0/um/Ole2.h",
+                "base/c/Include/10.0.26100.0/um/olectl.h": "base/c/Include/10.0.26100.0/um/OleCtl.h",
+                "**/*.h": "lowercase",
+                "**/*.lib": "lowercase",
+                "**/*.Lib": "lowercase"
+              },
+              "architectures": [
+                "x64",
+                "arm64"
+              ]
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [],
+          "explicitRootModuleDirectDevDeps": [
+            "windows_sdk"
+          ],
+          "useAllRepos": "NO",
+          "reproducible": false
+        }
+      }
     }
   },
   "facts": {
@@ -2869,6 +3046,17 @@
         }
       },
       "fact_version": "v2"
+    },
+    "@@windows_support+//windows:extensions.bzl%msvc_runtime": {
+      "visual_studio_installer_manifest_v1": {
+        "integrity": "sha256-qOhU+p8/uurCfXME4pfxZg1xN0ATid61fPeYPzPBb+8=",
+        "request": {
+          "visual_studio_channel_url": "https://aka.ms/vs/stable/channel",
+          "visual_studio_installer_manifest_integrity": "sha256-qOhU+p8/uurCfXME4pfxZg1xN0ATid61fPeYPzPBb+8=",
+          "visual_studio_installer_manifest_url": "https://download.visualstudio.microsoft.com/download/pr/fdc37f6e-59f6-4054-838a-b476eeaa6ec3/1d82370739911457e0a2f6be15d8b5f569531b352b2eabb961429eea1e99e356/VisualStudio.vsman"
+        },
+        "url": "https://download.visualstudio.microsoft.com/download/pr/fdc37f6e-59f6-4054-838a-b476eeaa6ec3/1d82370739911457e0a2f6be15d8b5f569531b352b2eabb961429eea1e99e356/VisualStudio.vsman"
+      }
     }
   },
   "factsVersions": {}
