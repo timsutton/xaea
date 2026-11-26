@@ -16,9 +16,9 @@ and run in one command, use `bazel run //:xaea -- --help`.
 
 Make dependency changes in `Cargo.toml` and update `Cargo.lock` with Cargo.
 Bazel's Crate Universe regenerates the dependency targets from those files and
-uses the locked versions and manifest features. The build reads package
-metadata such as the version from `Cargo.toml` as well. If you change the
-Rust edition, update `BUILD.bazel` to match.
+uses the locked versions and manifest features. A genrule reads the package
+version from `Cargo.toml` for `xaea --version`. If you change the Rust edition,
+update `BUILD.bazel` to match.
 
 `MODULE.bazel.lock` records Bazel module resolution and the generated crate
 targets. CI rejects a stale lockfile. After changing dependencies or updating

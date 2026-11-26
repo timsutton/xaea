@@ -59,4 +59,5 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
+crate.render_config(generate_cargo_toml_env_vars = False)
 use_repo(crate, "crates")

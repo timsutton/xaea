@@ -1,6 +1,5 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_python//python:defs.bzl", "py_binary")
-load("@rules_rust//cargo:defs.bzl", "cargo_toml_env_vars")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test", "rust_test_suite")
 
 platform(
@@ -11,9 +10,21 @@ platform(
     ],
 )
 
-cargo_toml_env_vars(
+genrule(
     name = "package_env",
-    src = "Cargo.toml",
+    srcs = ["Cargo.toml"],
+    outs = ["package.env"],
+    cmd = r"""
+        sed -nE '
+            /^[[:space:]]*\[package\][[:space:]]*(#.*)?$$/,/^[[:space:]]*\[/ {
+                s/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*(#.*)?$$/CARGO_PKG_VERSION=\1/p
+            }
+        ' "$<" > "$@"
+        if [ ! -s "$@" ]; then
+            echo 'Could not read [package].version from Cargo.toml' >&2
+            exit 1
+        fi
+    """,
 )
 
 rust_binary(
