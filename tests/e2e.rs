@@ -1,18 +1,15 @@
 //! End-to-end fidelity tests against a synthetic, fully signed profile-0
-//! AEA built at test time by scripts/make_test_aea.py.
+//! AEA checked in under tests/fixtures.
 //!
 //! The synthetic archive embeds every structural edge case we rely on:
 //! multi-cluster geometry with the last-cluster capacity-padding erratum,
 //! a stored (comp == orig) segment, a blob spanning cluster boundaries, a
 //! blob ending exactly on a segment boundary, empty files, unicode/space
 //! paths, `..`-escaping record and link paths, and non-default modes.
-//!
-//! Skipped (with a notice) when python3 or the `cryptography` package is
-//! unavailable, so `cargo test` never fails merely for missing tooling.
 
 mod common;
 
-use common::{build_archive, check, manifest, sig_off, xaea};
+use common::{check, fixture, fixture_json, sig_off, tmpdir, xaea};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -20,17 +17,10 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Build the synthetic archive; returns (dir, manifest). `None` = skip.
-fn synthetic(tag: &str) -> Option<(PathBuf, Value)> {
-    let dir = build_archive(tag, &["--evil"])?;
-    let manifest = manifest(&dir);
-    Some((dir, manifest))
-}
-
-fn inspect(dir: &Path, extra: &[&str]) -> Value {
+fn inspect(extra: &[&str]) -> Value {
     let out = xaea()
         .arg("inspect")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .args(extra)
         .output()
         .expect("run xaea inspect");
@@ -72,10 +62,7 @@ fn mode_of(p: &Path) -> u32 {
 
 #[test]
 fn synthetic_verifies_green() {
-    let Some((dir, _)) = synthetic("verify") else {
-        return;
-    };
-    let v = inspect(&dir, &["--verify", "--json"]);
+    let v = inspect(&["--verify", "--json"]);
     assert_eq!(v["format"], "AEA1");
     assert_eq!(v["profile"], 0);
     assert_eq!(v["geometry_ok"], true);
@@ -91,15 +78,13 @@ fn synthetic_verifies_green() {
     assert_eq!(check(&v, "signature_padded_ok"), true);
     // Self-signed test leaf must NOT verify to an Apple root.
     assert_eq!(check(&v, "trusted_root"), false);
-    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn synthetic_extract_fidelity() {
-    if let Some((dir, _, stats)) = extract_fidelity("fidelity", &["--no-compress"]) {
-        assert_eq!(stats["compressed"], false);
-        fs::remove_dir_all(&dir).ok();
-    }
+    let (dir, _, stats) = extract_fidelity("fidelity", &["--no-compress"]);
+    assert_eq!(stats["compressed"], false);
+    fs::remove_dir_all(&dir).ok();
 }
 
 /// Compression is the macOS default. It must produce the identical tree
@@ -109,9 +94,7 @@ fn synthetic_extract_fidelity() {
 #[test]
 fn synthetic_extract_fidelity_compressed() {
     use std::os::macos::fs::MetadataExt;
-    let Some((dir, out, stats)) = extract_fidelity("compress", &[]) else {
-        return;
-    };
+    let (dir, out, stats) = extract_fidelity("compress", &[]);
     if stats["compressed"] != true {
         eprintln!("SKIP flag checks: temp volume does not support compression");
         fs::remove_dir_all(&dir).ok();
@@ -141,13 +124,14 @@ fn libc_uf_compressed() -> u32 {
 }
 
 /// Extract the synthetic archive with `extra` flags and check the exact
-/// tree against its manifest. Returns (archive dir, output dir, stats).
-fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Value)> {
-    let (dir, man) = synthetic(tag)?;
+/// tree against its manifest. Returns (temp dir, output dir, stats).
+fn extract_fidelity(tag: &str, extra: &[&str]) -> (PathBuf, PathBuf, Value) {
+    let dir = tmpdir(tag);
+    let man = fixture_json("manifest.json");
     let out = dir.join("out");
     let run = xaea()
         .arg("extract")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .arg(&out)
         .arg("--json")
         .args(extra)
@@ -231,17 +215,16 @@ fn extract_fidelity(tag: &str, extra: &[&str]) -> Option<(PathBuf, PathBuf, Valu
             .to_string_lossy(),
         "../../../SystemFrameworks"
     );
-    Some((dir, out, stats))
+    (dir, out, stats)
 }
 
 #[test]
 fn dry_run_matches_extract_counts() {
-    let Some((dir, man)) = synthetic("dry") else {
-        return;
-    };
+    let dir = tmpdir("dry");
+    let man = fixture_json("manifest.json");
     let run = xaea()
         .arg("extract")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .arg(dir.join("dry-out"))
         .arg("--dry-run")
         .arg("--json")
@@ -284,11 +267,9 @@ fn verify_report(path: &Path, extra: &[&str]) -> Option<Value> {
 
 #[test]
 fn tampering_is_detected() {
-    let Some((dir, _)) = synthetic("tamper") else {
-        return;
-    };
-    let aea = dir.join("archive.aea");
-    let meta = inspect(&dir, &["--json"]);
+    let dir = tmpdir("tamper");
+    let aea = fixture("archive.aea");
+    let meta = inspect(&["--json"]);
     let off = sig_off(&aea);
     let rootmac_off = off + 128 + 32 + 32;
     let c1 = dir.join("t1.aea");
@@ -391,10 +372,8 @@ fn tampering_is_detected() {
 
 #[test]
 fn extract_into_populated_dir_ok_but_top_level_collision_aborts() {
-    let Some((dir, _)) = synthetic("outpolicy") else {
-        return;
-    };
-    let archive = dir.join("archive.aea");
+    let dir = tmpdir("outpolicy");
+    let archive = fixture("archive.aea");
 
     // A populated output dir is fine as long as the archive's top-level
     // entries ("T", "escaped" in the synthetic archive) are not in it.
@@ -455,15 +434,13 @@ fn extract_into_populated_dir_ok_but_top_level_collision_aborts() {
 
 #[test]
 fn extract_defaults_to_current_dir() {
-    let Some((dir, _)) = synthetic("cwd") else {
-        return;
-    };
+    let dir = tmpdir("cwd");
     let cwd = dir.join("cwd");
     fs::create_dir_all(&cwd).unwrap();
     let run = xaea()
         .current_dir(&cwd)
         .arg("extract")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .output()
         .unwrap();
     assert!(
@@ -477,14 +454,12 @@ fn extract_defaults_to_current_dir() {
 
 #[test]
 fn evil_symlink_archives_are_refused_and_contained() {
-    let Some((dir, _)) = synthetic("evil") else {
-        return;
-    };
+    let dir = tmpdir("evil");
     for name in ["evil1.aea", "evil2.aea", "evil3.aea"] {
         let out = dir.join(format!("out-{name}"));
         let run = xaea()
             .arg("extract")
-            .arg(dir.join(name))
+            .arg(fixture(name))
             .arg(&out)
             .output()
             .unwrap();
@@ -509,9 +484,7 @@ fn evil_symlink_archives_are_refused_and_contained() {
 
 #[test]
 fn decoders_produce_identical_trees() {
-    let Some((dir, _)) = synthetic("decoders") else {
-        return;
-    };
+    let dir = tmpdir("decoders");
     let mut decoders = vec!["lzma-turbo", "liblzma"];
     if cfg!(target_os = "macos") {
         decoders.push("libcompression");
@@ -519,14 +492,14 @@ fn decoders_produce_identical_trees() {
 
     let mut trees = Vec::new();
     for &dec in &decoders {
-        let v = inspect(&dir, &["--verify", "--json", "--decoder", dec]);
+        let v = inspect(&["--verify", "--json", "--decoder", dec]);
         assert_eq!(check(&v, "checksums_ok"), 7, "{dec}");
         assert_eq!(check(&v, "checksums_failed").as_array().unwrap().len(), 0);
 
         let out = dir.join(format!("out-{dec}"));
         let run = xaea()
             .arg("extract")
-            .arg(dir.join("archive.aea"))
+            .arg(fixture("archive.aea"))
             .arg(&out)
             .args(["--json", "--decoder", dec])
             .output()

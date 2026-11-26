@@ -7,15 +7,14 @@
 //! Classes exercised with synthetic inputs: success (0), usage (2),
 //! unreadable input (3), rejected archive (4), verification failure (5),
 //! extraction failure (6). The 5/6 split needs the fully signed synthetic
-//! archive from scripts/make_test_aea.py (same builder tests/e2e.rs uses);
-//! those tests skip when python3 or its `cryptography` package is missing.
+//! archive in tests/fixtures, also used by tests/e2e.rs.
 
 mod common;
 
-use common::{build_archive, check, sig_off, tmpdir, xaea};
+use common::{check, fixture, sig_off, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Run xaea, return its exit code.
 fn code(args: &[&str]) -> i32 {
@@ -25,11 +24,6 @@ fn code(args: &[&str]) -> i32 {
         "xaea died from a signal on {args:?}"
     );
     out.status.code().unwrap()
-}
-
-/// Build the synthetic signed archive; returns its path. `None` = skip.
-fn synthetic(tag: &str) -> Option<PathBuf> {
-    build_archive(tag, &["--evil"]).map(|dir| dir.join("archive.aea"))
 }
 
 /// Copy `src` to `dst`, flipping one bit at `off`.
@@ -101,10 +95,8 @@ fn rejected_archive_exits_4() {
 
 #[test]
 fn verification_failures_exit_5() {
-    let Some(aea) = synthetic("verify5") else {
-        return;
-    };
-    let dir = aea.parent().unwrap();
+    let aea = fixture("archive.aea");
+    let dir = tmpdir("verify5");
     let off = sig_off(&aea);
 
     // Baseline: the clean archive verifies green.
@@ -182,15 +174,13 @@ fn verification_failures_exit_5() {
         5,
         "corrupt root MAC, --json"
     );
-    fs::remove_dir_all(dir).ok();
+    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn extraction_failures_exit_6() {
-    let Some(aea) = synthetic("extract6") else {
-        return;
-    };
-    let dir = aea.parent().unwrap();
+    let aea = fixture("archive.aea");
+    let dir = tmpdir("extract6");
 
     // Baseline: clean dry-run and full extract succeed.
     assert_eq!(
@@ -266,5 +256,5 @@ fn extraction_failures_exit_6() {
         4,
         "truncated archive"
     );
-    fs::remove_dir_all(dir).ok();
+    fs::remove_dir_all(&dir).ok();
 }

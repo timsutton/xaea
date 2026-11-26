@@ -1,0 +1,83 @@
+{
+ "cases": [
+  {
+   "name": "bad-sig.aea",
+   "mode": "signature bytes do not match the signed prefix",
+   "expect": [
+    "signature"
+   ],
+   "check_false": [
+    "content_signature_ok"
+   ],
+   "check_true": [
+    "signature_padded_ok"
+   ],
+   "parses": true
+  },
+  {
+   "name": "bad-sig-der.aea",
+   "mode": "signature field opens no DER SEQUENCE",
+   "expect": [
+    "signature"
+   ],
+   "check_false": [
+    "content_signature_ok"
+   ],
+   "check_true": [
+    "signature_padded_ok"
+   ],
+   "parses": true
+  },
+  {
+   "name": "bad-sig-len.aea",
+   "mode": "signature DER length runs past the field",
+   "expect": [
+    "signature"
+   ],
+   "check_false": [
+    "content_signature_ok",
+    "signature_padded_ok"
+   ],
+   "check_true": [],
+   "parses": true
+  },
+  {
+   "name": "bad-padding.aea",
+   "mode": "non-zero padding after the signature",
+   "expect": [
+    "padding"
+   ],
+   "check_false": [
+    "signature_padded_ok"
+   ],
+   "check_true": [
+    "content_signature_ok"
+   ],
+   "parses": true
+  },
+  {
+   "name": "truncated.aea",
+   "mode": "archive truncated mid-cluster",
+   "expect": [
+    "truncated"
+   ],
+   "check_false": [],
+   "check_true": [],
+   "parses": false
+  },
+  {
+   "name": "chain-mismatch.aea",
+   "mode": "certificate chain link does not verify",
+   "expect": [
+    "chain"
+   ],
+   "check_false": [
+    "chain_all_ok"
+   ],
+   "check_true": [
+    "content_signature_ok"
+   ],
+   "parses": true
+  }
+ ]
+}

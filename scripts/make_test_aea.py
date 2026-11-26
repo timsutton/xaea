@@ -9,8 +9,10 @@ on a segment boundary, empty files, unicode + spaced + `..`-escape paths,
 symlinks, non-default modes, and a self-signed P-256 signing certificate
 whose key is bound into the main-key KDF info.
 
-Usage: make_test_aea.py OUTPUT_DIR [--seed N] [--evil] [--tamper]
-Writes OUT/archive.aea and OUT/manifest.json.
+Usage: python3 -I scripts/make_test_aea.py OUTPUT_DIR [--seed N] [--evil]
+       [--links N] [--tamper]
+Writes OUT/archive.aea and OUT/manifest.json. See tests/fixtures/README.md
+for the checked-in fixture set.
 """
 import argparse
 import datetime
@@ -180,19 +182,19 @@ def align_boundary_file(recs: list[dict], rng_state: bytes) -> None:
 
 
 def make_signer(rng_state: bytes):
-    """Deterministic signing key + self-signed leaf (stable across runs)."""
+    """Derive a signing key from the seed and issue a self-signed leaf."""
     order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
     d = int.from_bytes(prand(rng_state + b"ecdsa", 40), "big") % (order - 1) + 1
     key = ec.derive_private_key(d, ec.SECP256R1())
-    now = datetime.datetime.now(datetime.timezone.utc)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
                                          "xaea synthetic test leaf")])
     cert = (x509.CertificateBuilder()
             .subject_name(name).issuer_name(name)
             .public_key(key.public_key())
             .serial_number(0xC0FFEE)
-            .not_valid_before(now - datetime.timedelta(days=1))
-            .not_valid_after(now + datetime.timedelta(days=3650))
+            # The extractor checks validity against the current time.
+            .not_valid_before(datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_after(datetime.datetime(2099, 12, 31, tzinfo=datetime.timezone.utc))
             .sign(key, hashes.SHA256()))
     cert_pem = cert.public_bytes(
         serialization.Encoding.PEM).decode().encode()
