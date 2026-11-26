@@ -29,7 +29,7 @@ jobs:
     # to the fixture secret, so skip there rather than fail; a fork can still
     # dispatch manually with the fixture_url input.
     if: github.event_name != 'schedule' || github.repository == 'timsutton/xaea'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e1d2f3865e076b5708fb8506d98388b06c13ca # v7
