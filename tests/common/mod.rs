@@ -7,12 +7,12 @@
 
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, absolute};
 use std::process::Command;
 
 /// A `Command` for the binary under test.
 pub fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
+    Command::new(absolute(env!("CARGO_BIN_EXE_xaea")).expect("resolve the xaea test binary"))
 }
 
 /// A fresh, uniquely named directory under the system temp dir, prefixed
@@ -34,9 +34,10 @@ pub fn tmpdir(tag: &str) -> PathBuf {
 
 /// Absolute path to a checked-in synthetic archive or manifest.
 pub fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(name)
+        .join(name);
+    absolute(path).expect("resolve the synthetic fixture path")
 }
 
 pub fn fixture_json(name: &str) -> Value {

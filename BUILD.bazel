@@ -1,0 +1,93 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test", "rust_test_suite")
+
+platform(
+    name = "remote_linux_arm64",
+    constraint_values = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+)
+
+genrule(
+    name = "package_env",
+    srcs = ["Cargo.toml"],
+    outs = ["package.env"],
+    cmd = r"""
+        sed -nE '
+            /^[[:space:]]*\[package\][[:space:]]*(#.*)?$$/,/^[[:space:]]*\[/ {
+                s/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*(#.*)?$$/CARGO_PKG_VERSION=\1/p
+            }
+        ' "$<" > "$@"
+        if [ ! -s "$@" ]; then
+            echo 'Could not read [package].version from Cargo.toml' >&2
+            exit 1
+        fi
+    """,
+)
+
+rust_binary(
+    name = "xaea",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    compile_data = ["assets/AppleRootCA.pem"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":package_env"],
+    deps = all_crate_deps(
+        normal = True,
+        proc_macro = False,
+    ),
+)
+
+rust_test(
+    name = "unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":xaea",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test_suite(
+    name = "integration_tests",
+    size = "small",
+    srcs = glob(["tests/*.rs"]),
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    data = [":xaea"] + glob([
+        "tests/fixtures/*.aea",
+        "tests/fixtures/*.json",
+    ]),
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {
+        "CARGO_BIN_EXE_xaea": "./$(rootpath :xaea)",
+        # The test starts in the workspace's runfiles directory.
+        "CARGO_MANIFEST_DIR": ".",
+    },
+    shared_srcs = glob(["tests/common/**/*.rs"]),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":integration_tests",
+        ":unit_test",
+    ],
+)

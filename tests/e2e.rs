@@ -243,10 +243,10 @@ fn dry_run_matches_extract_counts() {
     fs::remove_dir_all(&dir).ok();
 }
 
-fn flip_byte(path: &Path, off: usize) {
-    let mut b = fs::read(path).unwrap();
+fn write_with_flipped_byte(source: &Path, output: &Path, off: usize) {
+    let mut b = fs::read(source).unwrap();
     b[off] ^= 0x01;
-    fs::write(path, &b).unwrap();
+    fs::write(output, &b).unwrap();
 }
 
 /// Run `inspect --verify` and return the JSON report if stdout carries one.
@@ -282,8 +282,7 @@ fn tampering_is_detected() {
     //    failed, header MACs intact. The signature field is zeroed out of the
     //    signed prefix and is not part of any MAC, so the header checks
     //    must all stay green.
-    fs::copy(&aea, &c1).unwrap();
-    flip_byte(&c1, off + 10);
+    write_with_flipped_byte(&aea, &c1, off + 10);
     let v =
         verify_report(&c1, &["--no-checksums"]).expect("sig-field flip must still print a report");
     assert_eq!(check(&v, "content_signature_ok"), false, "sig byte flip");
@@ -315,8 +314,7 @@ fn tampering_is_detected() {
     //    ikm + mainsalt + rootmac + roothdr + chmac0), so the content
     //    signature fails too — the format gives no isolated root-MAC-only
     //    failure, and the report must show exactly that.
-    fs::copy(&aea, &c1).unwrap();
-    flip_byte(&c1, rootmac_off + 5);
+    write_with_flipped_byte(&aea, &c1, rootmac_off + 5);
     let v = verify_report(&c1, &["--no-checksums"]).expect("root MAC flip still reportable");
     assert_eq!(check(&v, "root_mac_ok"), false, "root MAC flip detected");
     assert_eq!(
@@ -355,9 +353,8 @@ fn tampering_is_detected() {
 
     // 3) Last segment's payload byte flipped -> segment MAC and/or
     //    checksum must fail; a decode refusal counts too.
-    fs::copy(&aea, &c1).unwrap();
-    let len = fs::metadata(&c1).unwrap().len() as usize;
-    flip_byte(&c1, len - 1);
+    let len = fs::metadata(&aea).unwrap().len() as usize;
+    write_with_flipped_byte(&aea, &c1, len - 1);
     match verify_report(&c1, &[]) {
         None => {}
         Some(v) => {
