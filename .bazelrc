@@ -1,3 +1,5 @@
+common:ci --lockfile_mode=error
+
 build:release -c opt
 build:release --@rules_rust//rust/settings:lto=fat
 

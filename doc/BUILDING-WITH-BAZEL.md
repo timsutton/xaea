@@ -21,8 +21,9 @@ metadata such as the version from `Cargo.toml` as well. If you change the
 Rust edition, update `BUILD.bazel` to match.
 
 `MODULE.bazel.lock` records Bazel module resolution and the generated crate
-targets. After changing dependencies or updating Bazel or its rules, run
-`bazel build //:xaea` and commit any changes to this file.
+targets. CI rejects a stale lockfile. After changing dependencies or updating
+Bazel or its rules, run `bazel build //:xaea` and `bazel test //:tests`, then
+commit any changes to this file.
 
 ## Tests
 

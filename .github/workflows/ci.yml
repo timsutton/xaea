@@ -79,8 +79,8 @@ jobs:
           path: ${{ runner.temp }}/bazel-repository-cache
           key: bazel-repository-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', 'scripts/bazel-test-requirements.lock') }}
           restore-keys: bazel-repository-${{ runner.os }}-${{ runner.arch }}-
-      - run: bazelisk build --repository_cache="$RUNNER_TEMP/bazel-repository-cache" //:xaea
-      - run: bazelisk test --repository_cache="$RUNNER_TEMP/bazel-repository-cache" --test_output=errors //:tests
+      - run: bazelisk build --config=ci --repository_cache="$RUNNER_TEMP/bazel-repository-cache" //:xaea
+      - run: bazelisk test --config=ci --repository_cache="$RUNNER_TEMP/bazel-repository-cache" --test_output=errors //:tests
 
   linux-docker:
     name: Linux Docker image
