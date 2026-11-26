@@ -36,6 +36,12 @@ This runs the unit and CLI integration suites. Bazel supplies Python and
 fixture, use the existing Cargo fixture test with `AEA_FIXTURE` and
 `--ignored`.
 
+To upgrade the Python test dependencies, run
+`bazel run //:test_requirements.run -- --upgrade`. This uses the Bazel-managed
+uv and Python toolchains to regenerate `scripts/bazel-test-requirements.txt`
+from `scripts/bazel-test-requirements.in`. Run the Bazel tests in update mode,
+then commit the refreshed requirements file and any changes to `MODULE.bazel.lock`.
+
 ## Remote cache
 
 If a gRPC cache is listening on port 8980 on your machine, enable it with
