@@ -10,11 +10,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
 
-### Changed
-
-* Cargo integration tests use checked-in synthetic AEA fixtures and run without
-  Python or `cryptography`. Regenerate the fixtures with `scripts/make_test_aea.py`.
-
 ## 0.2.1 - 2026-11-24
 
 ### Added
