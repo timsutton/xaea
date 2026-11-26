@@ -1,3 +1,6 @@
+build:release -c opt
+build:release --@rules_rust//rust/settings:lto=fat
+
 build:remote_cache --remote_cache=grpc://localhost:8980
 
 build:remote_exec --remote_executor=grpc://localhost:8980

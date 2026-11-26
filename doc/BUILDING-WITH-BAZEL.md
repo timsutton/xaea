@@ -10,8 +10,9 @@ bazel build //:xaea
 bazel-bin/xaea --version
 ```
 
-Use `bazel build -c opt //:xaea` for an optimized build. To build and run
-in one command, use `bazel run //:xaea -- --help`.
+Use `bazel build --config=release //:xaea` for an optimized build with the
+same fat link-time optimization (LTO) mode as `cargo build --release`. To build
+and run in one command, use `bazel run //:xaea -- --help`.
 
 Make dependency changes in `Cargo.toml` and update `Cargo.lock` with Cargo.
 Bazel's Crate Universe regenerates the dependency targets from those files and
