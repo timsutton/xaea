@@ -31,18 +31,10 @@ commit any changes to this file.
 bazel test //:tests
 ```
 
-This runs the unit and CLI integration suites. Bazel supplies Python and
-`cryptography` for the synthetic archives. For the multi-gigabyte Xcode
-fixture, use the existing Cargo fixture test with `AEA_FIXTURE` and
+This runs the unit and CLI integration suites using the checked-in
+[synthetic fixtures](../tests/fixtures/README.md). For the multi-gigabyte
+Xcode fixture, use the existing Cargo fixture test with `AEA_FIXTURE` and
 `--ignored`.
-
-To upgrade the Python test dependencies, run
-`bazel run //:test_requirements.run -- --upgrade`. This uses the Bazel-managed
-uv and Python toolchains to regenerate `scripts/uv.lock` from
-`scripts/pyproject.toml`. Run `bazel test //:tests`, then commit the refreshed
-`scripts/uv.lock` and any changes to `MODULE.bazel.lock`.
-When changing the Python minor version in `MODULE.bazel`, update
-`requires-python` in `scripts/pyproject.toml` before regenerating the lockfile.
 
 ## Remote cache
 

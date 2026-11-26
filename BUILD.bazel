@@ -1,6 +1,4 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_python//python:defs.bzl", "py_binary")
-load("@rules_python//python/uv:lock.bzl", "lock")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test", "rust_test_suite")
 
 platform(
@@ -55,20 +53,6 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
-lock(
-    name = "test_requirements",
-    srcs = ["scripts/pyproject.toml"],
-    out = "scripts/uv.lock",
-)
-
-py_binary(
-    name = "make_test_aea",
-    srcs = ["scripts/make_test_aea.py"],
-    legacy_create_init = 0,
-    main = "scripts/make_test_aea.py",
-    deps = ["@test_python_deps//cryptography"],
-)
-
 rust_test_suite(
     name = "integration_tests",
     size = "small",
@@ -79,10 +63,10 @@ rust_test_suite(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    data = [
-        ":make_test_aea",
-        ":xaea",
-    ],
+    data = [":xaea"] + glob([
+        "tests/fixtures/*.aea",
+        "tests/fixtures/*.json",
+    ]),
     edition = "2024",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -90,7 +74,8 @@ rust_test_suite(
     ),
     rustc_env = {
         "CARGO_BIN_EXE_xaea": "./$(rootpath :xaea)",
-        "XAEA_TEST_AEA_BUILDER": "./$(rootpath :make_test_aea)",
+        # The test starts in the workspace's runfiles directory.
+        "CARGO_MANIFEST_DIR": ".",
     },
     shared_srcs = glob(["tests/common/**/*.rs"]),
     deps = all_crate_deps(

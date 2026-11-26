@@ -1,33 +1,8 @@
 module(name = "xaea")
 
 bazel_dep(name = "rules_rust", version = "0.75.0")
-bazel_dep(name = "rules_python", version = "2.5.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "llvm", version = "0.8.27")
-
-PYTHON_VERSION = "3.15"
-
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.defaults(python_version = PYTHON_VERSION)
-python.toolchain(python_version = PYTHON_VERSION)
-
-uv = use_extension("@rules_python//python/uv:uv.bzl", "uv", dev_dependency = True)
-uv.configure()
-
-pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
-pip.parse(
-    download_only = True,
-    hub_name = "test_python_deps",
-    python_version = PYTHON_VERSION,
-    target_platforms = [
-        "linux_aarch64",
-        "linux_x86_64",
-        "osx_aarch64",
-        "osx_x86_64",
-    ],
-    uv_lock = "//:scripts/uv.lock",
-)
-use_repo(pip, "test_python_deps")
 
 # Match the Rust version used by Cargo CI.
 RUST_VERSION = "1.100.0"

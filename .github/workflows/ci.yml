@@ -77,7 +77,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/bazel-repository-cache
-          key: bazel-repository-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock', 'scripts/uv.lock') }}
+          key: bazel-repository-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock', 'Cargo.lock') }}
           restore-keys: bazel-repository-${{ runner.os }}-${{ runner.arch }}-
       - run: bazelisk build --config=ci --repository_cache="$RUNNER_TEMP/bazel-repository-cache" //:xaea
       - run: bazelisk test --config=ci --repository_cache="$RUNNER_TEMP/bazel-repository-cache" --test_output=errors //:tests
