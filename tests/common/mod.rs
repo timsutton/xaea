@@ -1,6 +1,5 @@
-//! Helpers shared by the integration tests: running the binary, private
-//! temp directories, and building synthetic archives with
-//! `scripts/make_test_aea.py`.
+//! Helpers shared by the integration tests for running the binary, creating
+//! private temp directories, and reading checked-in synthetic fixtures.
 //!
 //! Each test target compiles its own copy of this module and uses a
 //! different subset of it.
@@ -33,50 +32,17 @@ pub fn tmpdir(tag: &str) -> PathBuf {
     d
 }
 
-/// Build a synthetic signed archive (seed 1, plus `builder_args`) into a
-/// fresh directory and return that directory; the archive is
-/// `archive.aea` and its manifest `manifest.json`. `None` means skip: the
-/// builder needs python3 with the `cryptography` package, and `cargo test`
-/// must never fail merely for missing tooling — unless
-/// `AEA_REQUIRE_SYNTHETIC=1` is set (as in CI), in which case the missing
-/// dependency panics instead, because an untested rejection path must not
-/// look green.
-pub fn build_archive(tag: &str, builder_args: &[&str]) -> Option<PathBuf> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !has_crypto {
-        let msg = "python3 with `cryptography` not available: the synthetic \
-                   AEA builder cannot run, so the synthetic-AEA tests are UNTESTED \
-                   (pip install cryptography to run them)";
-        if std::env::var("AEA_REQUIRE_SYNTHETIC").is_ok_and(|v| v == "1") {
-            panic!("{msg}");
-        }
-        eprintln!("SKIP {tag}: {msg}");
-        return None;
-    }
-    let dir = tmpdir(tag);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py");
-    let out = Command::new("python3")
-        .arg("-I")
-        .arg(&script)
-        .arg(&dir)
-        .args(["--seed", "1"])
-        .args(builder_args)
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(dir)
+/// Absolute path to a checked-in synthetic archive or manifest.
+pub fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
 }
 
-/// The builder's `manifest.json` in `dir`.
-pub fn manifest(dir: &Path) -> Value {
-    serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap()
+pub fn fixture_json(name: &str) -> Value {
+    let path = fixture(name);
+    let bytes = fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()))
 }
 
 /// The value of `key` in whichever `inspect --json` check object holds it.

@@ -3,17 +3,13 @@
 //! Prints one regular file from an archive to stdout: byte-exact against
 //! the manifest, refusing directories/symlinks, missing members and
 //! tampered payloads.
-//!
-//! Skipped (with a notice) when python3 or the `cryptography` package is
-//! unavailable, so `cargo test` never fails merely for missing tooling.
 
 mod common;
 
-use common::{build_archive, manifest, xaea};
+use common::{fixture, fixture_json, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 fn unhex(s: &str) -> Vec<u8> {
@@ -23,17 +19,10 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Build the signed synthetic archive; returns (dir, manifest). None = skip.
-fn synthetic(tag: &str) -> Option<(PathBuf, Value)> {
-    let dir = build_archive(tag, &["--evil"])?;
-    let m = manifest(&dir);
-    Some((dir, m))
-}
-
-fn cat(dir: &Path, member: &str) -> std::process::Output {
+fn cat(member: &str) -> std::process::Output {
     xaea()
         .arg("cat")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .arg(member)
         .output()
         .expect("run xaea cat")
@@ -41,9 +30,7 @@ fn cat(dir: &Path, member: &str) -> std::process::Output {
 
 #[test]
 fn every_file_is_byte_exact() {
-    let Some((dir, m)) = synthetic("cat-exact") else {
-        return;
-    };
+    let m = fixture_json("manifest.json");
     let files: Vec<&Value> = m["entries"]
         .as_array()
         .unwrap()
@@ -54,7 +41,7 @@ fn every_file_is_byte_exact() {
     for e in files {
         let path = e["path"].as_str().unwrap();
         let want = unhex(e["hex"].as_str().unwrap());
-        let out = cat(&dir, path);
+        let out = cat(path);
         let stdout = out.stdout.clone();
         assert!(
             out.status.success(),
@@ -67,15 +54,12 @@ fn every_file_is_byte_exact() {
 
 #[test]
 fn member_path_normalization_matches_extraction() {
-    let Some((dir, _)) = synthetic("cat-norm") else {
-        return;
-    };
-    let out = cat(&dir, "T/plain.txt");
+    let out = cat("T/plain.txt");
     assert!(out.status.success());
     let expect = out.stdout.clone();
 
     for variant in ["./T/plain.txt", "T/../T/plain.txt"] {
-        let out = cat(&dir, variant);
+        let out = cat(variant);
         let stdout = out.stdout.clone();
         assert!(
             out.status.success(),
@@ -87,11 +71,11 @@ fn member_path_normalization_matches_extraction() {
 
     // The record whose path escapes above root must print identically
     // regardless of which traversal spelling is used.
-    let out = cat(&dir, "escaped/inside.bin");
+    let out = cat("escaped/inside.bin");
     let stdout = out.stdout.clone();
     assert!(out.status.success());
     assert_eq!(stdout, b"clamped\n");
-    let out = cat(&dir, "T/../../esc/../escaped/inside.bin");
+    let out = cat("T/../../esc/../escaped/inside.bin");
     let stdout = out.stdout.clone();
     assert!(out.status.success());
     assert_eq!(stdout, b"clamped\n");
@@ -99,10 +83,7 @@ fn member_path_normalization_matches_extraction() {
 
 #[test]
 fn empty_file_is_empty_stdout() {
-    let Some((dir, _)) = synthetic("cat-empty") else {
-        return;
-    };
-    let out = cat(&dir, "T/empty.bin");
+    let out = cat("T/empty.bin");
     let stdout = out.stdout.clone();
     assert!(out.status.success());
     assert!(stdout.is_empty(), "empty file prints nothing");
@@ -110,10 +91,7 @@ fn empty_file_is_empty_stdout() {
 
 #[test]
 fn directory_member_is_refused() {
-    let Some((dir, _)) = synthetic("cat-dir") else {
-        return;
-    };
-    let out = cat(&dir, "T/sub dir");
+    let out = cat("T/sub dir");
     let stdout = out.stdout.clone();
     assert!(!out.status.success(), "directory member must fail");
     assert!(stdout.is_empty(), "directory member prints nothing");
@@ -123,10 +101,7 @@ fn directory_member_is_refused() {
 
 #[test]
 fn symlink_member_is_refused() {
-    let Some((dir, _)) = synthetic("cat-link") else {
-        return;
-    };
-    let out = cat(&dir, "T/link-rel");
+    let out = cat("T/link-rel");
     let stdout = out.stdout.clone();
     assert!(!out.status.success(), "symlink member must fail");
     assert!(stdout.is_empty(), "symlink member prints nothing");
@@ -136,10 +111,7 @@ fn symlink_member_is_refused() {
 
 #[test]
 fn missing_member_exits_nonzero_with_empty_stdout() {
-    let Some((dir, _)) = synthetic("cat-missing") else {
-        return;
-    };
-    let out = cat(&dir, "T/does-not-exist");
+    let out = cat("T/does-not-exist");
     let stdout = out.stdout.clone();
     assert!(!out.status.success(), "missing member must fail");
     assert_eq!(out.status.code(), Some(6), "extraction-domain exit code");
@@ -148,10 +120,8 @@ fn missing_member_exits_nonzero_with_empty_stdout() {
 
 #[test]
 fn tampered_payload_is_refused() {
-    let Some((dir, _)) = synthetic("cat-tamper") else {
-        return;
-    };
-    let aea = dir.join("archive.aea");
+    let dir = tmpdir("cat-tamper");
+    let aea = fixture("archive.aea");
     let corrupt = dir.join("corrupt.aea");
     let mut b = fs::read(&aea).unwrap();
     let off = first_segment_data_off(&b);
@@ -172,14 +142,12 @@ fn tampered_payload_is_refused() {
         out.stdout.is_empty(),
         "tampered archive must not print bytes"
     );
+    fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn stdin_archive_works() {
-    let Some((dir, _)) = synthetic("cat-stdin") else {
-        return;
-    };
-    let bytes = fs::read(dir.join("archive.aea")).unwrap();
+    let bytes = fs::read(fixture("archive.aea")).unwrap();
     let mut child = xaea()
         .args(["cat", "-", "T/plain.txt"])
         .stdin(Stdio::piped())

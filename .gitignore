@@ -4,6 +4,7 @@
 !/fixtures/.gitkeep
 /extracted*/
 *.aea
+!/tests/fixtures/*.aea
 .DS_Store
 *.xip
 /CLAUDE-CODE-REVIEW.md

@@ -1,90 +1,26 @@
 //! Corrupt / invalid-signature archives must be refused (issue #49).
 //!
-//! `scripts/make_test_aea.py --tamper` builds the same fully signed synthetic
-//! archive the e2e suite uses, then derives one broken variant per rejection
-//! path — wrong signature bytes, a signature that opens no DER SEQUENCE, a
-//! signature length that runs past its field, dirty signature padding, a
-//! chain whose leaf was not signed by its stated issuer, and a truncated
-//! envelope — and records in `tamper.json` what each must trip.
+//! `scripts/make_test_aea.py --tamper` generates one broken variant of the
+//! signed synthetic archive per rejection path: wrong signature bytes, a
+//! signature that opens no DER SEQUENCE, a signature length that runs past
+//! its field, dirty signature padding, a chain whose leaf was not signed by
+//! its stated issuer, and a truncated envelope. `tamper.json` records the
+//! expected failures for each variant.
 //!
 //! For every variant we assert all three of: `extract` exits non-zero without
 //! writing an output tree and prints a reason naming the failure mode;
 //! `inspect --verify` exits non-zero; and the JSON report marks exactly the
 //! expected check false (for variants that still parse). Message matching is
 //! on lowercase substrings chosen to distinguish the paths, not exact text.
-//!
-//! Skipped (with a notice) when python3 or the `cryptography` package is
-//! unavailable — unless `AEA_REQUIRE_SYNTHETIC=1` is set, which CI does so a
-//! silently-untested rejection path can never go green again.
 
+mod common;
+
+use common::{check, fixture, fixture_json, tmpdir, xaea};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
-fn xaea() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_xaea"))
-}
-
-/// Build the signed archive plus its corrupt variants; returns the dir.
-/// `tag` keeps concurrent tests in separate directories. `None` = skip
-/// (builder tooling missing and not required).
-fn tamper_set(tag: &str) -> Option<PathBuf> {
-    let has_crypto = Command::new("python3")
-        .args(["-I", "-c", "import cryptography"])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !has_crypto {
-        let msg = "python3 with `cryptography` not available: the synthetic \
-                   AEA builder cannot run, so the corrupt-signature rejection \
-                   paths are UNTESTED (pip install cryptography to run them)";
-        if std::env::var("AEA_REQUIRE_SYNTHETIC").is_ok_and(|v| v == "1") {
-            panic!("{msg}");
-        }
-        eprintln!("SKIP {tag}: {msg}");
-        return None;
-    }
-    let dir = std::env::temp_dir().join(format!(
-        "xaea-sigreject-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    let out = Command::new("python3")
-        .args(["-I"])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_aea.py"))
-        .arg(&dir)
-        .arg("--seed")
-        .arg("1")
-        .arg("--tamper")
-        .output()
-        .expect("run builder");
-    assert!(
-        out.status.success(),
-        "builder failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(dir)
-}
-
-fn check<'a>(v: &'a Value, key: &str) -> &'a Value {
-    v["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c.get(key).is_some())
-        .unwrap_or_else(|| panic!("no check object containing {key}"))
-        .get(key)
-        .unwrap()
-}
-
-fn cases(dir: &Path) -> Vec<Value> {
-    let man: Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("tamper.json")).unwrap()).unwrap();
+fn cases() -> Vec<Value> {
+    let man = fixture_json("tamper.json");
     let cases = man["cases"].as_array().unwrap().clone();
     assert!(
         cases.len() >= 4,
@@ -96,13 +32,11 @@ fn cases(dir: &Path) -> Vec<Value> {
 
 #[test]
 fn corrupt_signature_archives_are_refused() {
-    let Some(dir) = tamper_set("refuse") else {
-        return;
-    };
+    let dir = tmpdir("refuse");
     // The uncorrupted archive must pass, or none of this means anything.
     let clean = xaea()
         .arg("inspect")
-        .arg(dir.join("archive.aea"))
+        .arg(fixture("archive.aea"))
         .arg("--verify")
         .arg("--no-checksums")
         .arg("--json")
@@ -114,11 +48,11 @@ fn corrupt_signature_archives_are_refused() {
         String::from_utf8_lossy(&clean.stderr)
     );
 
-    for c in cases(&dir) {
+    for c in cases() {
         let name = c["name"].as_str().unwrap();
         let mode = c["mode"].as_str().unwrap();
-        let aea = dir.join(name);
-        assert!(aea.exists(), "{name}: builder did not write it");
+        let aea = fixture(name);
+        assert!(aea.exists(), "{name}: missing corruption fixture");
 
         // --- extract: refuse, explain, and touch nothing -------------------
         let out = dir.join(format!("out-{name}"));
@@ -192,16 +126,14 @@ fn corrupt_signature_archives_extract_only_when_forced() {
     // `--no-verify` stays the only way through: every archive that still
     // parses extracts when forced, while the truncated envelope is refused
     // as malformed no matter what is asked of it.
-    let Some(dir) = tamper_set("forced") else {
-        return;
-    };
-    for c in cases(&dir) {
+    let dir = tmpdir("forced");
+    for c in cases() {
         let name = c["name"].as_str().unwrap();
         let mode = c["mode"].as_str().unwrap();
         let out = dir.join(format!("forced-{name}"));
         let run = xaea()
             .arg("extract")
-            .arg(dir.join(name))
+            .arg(fixture(name))
             .arg(&out)
             .arg("--no-verify")
             .output()

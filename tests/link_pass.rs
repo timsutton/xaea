@@ -8,25 +8,18 @@
 //! the resulting tree is the same one the sequential pass produced — plus
 //! the pass's fallbacks (missing parent, occupied name).
 //!
-//! Drives the binary against archives built at test time by
-//! `scripts/make_test_aea.py`; skipped with a notice when python3 or the
-//! `cryptography` package is unavailable, like `tests/e2e.rs`.
+//! Drives the binary against synthetic archives in tests/fixtures.
 
 mod common;
 
-use common::{build_archive, xaea};
+use common::{fixture, fixture_json, tmpdir, xaea};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Link count for the many-links archive: comfortably past the extractor's
-/// parallel-path threshold, small enough to build and extract fast.
+/// parallel-path threshold, small enough to extract fast.
 const MANY_LINKS: usize = 1200;
-
-/// Build the adversarial and many-links archives; `None` = skip the test.
-fn build(tag: &str, links: usize) -> Option<PathBuf> {
-    build_archive(tag, &["--evil", "--links", &links.to_string()])
-}
 
 fn extract(archive: &Path, out: &Path, extra: &[&str]) -> std::process::Output {
     xaea()
@@ -74,11 +67,9 @@ fn snapshot(root: &Path) -> Vec<String> {
 /// link itself is then refused because a real directory is in the way.
 #[test]
 fn link_then_file_attack_stays_inside() {
-    let Some(dir) = build("attack", 1) else {
-        return;
-    };
+    let dir = tmpdir("attack");
     let out = dir.join("out");
-    let run = extract(&dir.join("evil1.aea"), &out, &[]);
+    let run = extract(&fixture("evil1.aea"), &out, &[]);
     assert!(
         !run.status.success(),
         "planted symlink chain must fail extraction: {}",
@@ -103,12 +94,10 @@ fn link_then_file_attack_stays_inside() {
 /// case-sensitive guard comparison used to let through.
 #[test]
 fn nested_link_records_are_refused() {
-    let Some(dir) = build("nested", 1) else {
-        return;
-    };
+    let dir = tmpdir("nested");
     for name in ["evil2.aea", "evil3.aea"] {
         let out = dir.join(format!("out-{name}"));
-        let run = extract(&dir.join(name), &out, &[]);
+        let run = extract(&fixture(name), &out, &[]);
         let err = stderr(&run);
         assert!(
             !run.status.success(),
@@ -130,15 +119,11 @@ fn nested_link_records_are_refused() {
 /// with the recorded target, including the missing-parent and occupant cases.
 #[test]
 fn many_links_extract_with_recorded_targets() {
-    let Some(dir) = build("many", MANY_LINKS) else {
-        return;
-    };
+    let dir = tmpdir("many");
     let out = dir.join("out");
-    let run = extract(&dir.join("links.aea"), &out, &[]);
+    let run = extract(&fixture("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
-    let manifest: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(dir.join("links-manifest.json")).unwrap())
-            .unwrap();
+    let manifest = fixture_json("links-manifest.json");
     let links = manifest["links"].as_array().unwrap();
     assert_eq!(links.len(), MANY_LINKS + 1);
     for e in links {
@@ -158,11 +143,9 @@ fn many_links_extract_with_recorded_targets() {
 /// parents on demand rather than failing.
 #[test]
 fn link_with_missing_parent_gets_its_dirs() {
-    let Some(dir) = build("orphan", MANY_LINKS) else {
-        return;
-    };
+    let dir = tmpdir("orphan");
     let out = dir.join("out");
-    let run = extract(&dir.join("links.aea"), &out, &[]);
+    let run = extract(&fixture("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
     // `orphan/NN/missing/parent/lK` for K % 7 == 2; no D record exists for
     // any component under `orphan`.
@@ -186,11 +169,9 @@ fn link_with_missing_parent_gets_its_dirs() {
 /// and the archive still extracts clean.
 #[test]
 fn link_over_existing_occupant_is_replaced() {
-    let Some(dir) = build("occupant", MANY_LINKS) else {
-        return;
-    };
+    let dir = tmpdir("occupant");
     let out = dir.join("out");
-    let run = extract(&dir.join("links.aea"), &out, &[]);
+    let run = extract(&fixture("links.aea"), &out, &[]);
     assert!(run.status.success(), "{}", stderr(&run));
     let p = out.join("P/F/0000/occupied");
     assert!(
@@ -209,13 +190,11 @@ fn link_over_existing_occupant_is_replaced() {
 /// to every link target and mode.
 #[test]
 fn concurrent_and_sequential_passes_agree() {
-    let Some(dir) = build("agree", MANY_LINKS) else {
-        return;
-    };
+    let dir = tmpdir("agree");
     let mut snaps = Vec::new();
     for w in ["1", "6"] {
         let out = dir.join(format!("out-w{w}"));
-        let run = extract(&dir.join("links.aea"), &out, &["--writers", w]);
+        let run = extract(&fixture("links.aea"), &out, &["--writers", w]);
         assert!(run.status.success(), "--writers {w}: {}", stderr(&run));
         snaps.push(snapshot(&out));
         fs::remove_dir_all(&out).ok();
@@ -242,9 +221,7 @@ fn concurrent_and_sequential_passes_agree() {
 /// even when the pass is otherwise large enough to run concurrently.
 #[test]
 fn directory_in_the_way_is_not_removed() {
-    let Some(dir) = build("isdir", MANY_LINKS) else {
-        return;
-    };
+    let dir = tmpdir("isdir");
     let out = dir.join("out");
     // Pre-create a directory on a name the archive wants for a link, so the
     // pass hits the EISDIR path instead of the replace path.
@@ -254,7 +231,7 @@ fn directory_in_the_way_is_not_removed() {
         b"do not remove me",
     )
     .unwrap();
-    let run = extract(&dir.join("links.aea"), &out, &[]);
+    let run = extract(&fixture("links.aea"), &out, &[]);
     assert!(!run.status.success(), "extraction should have failed");
     assert!(
         out.join("P/F/0000/N.framework/Versions/l0/keep").is_file(),
