@@ -22,6 +22,7 @@ use p256::elliptic_curve::Field as _;
 use p256::elliptic_curve::NonZeroScalar;
 use p256::elliptic_curve::ops::Reduce;
 use sha2::Sha256;
+use std::path::Path;
 
 /// `KEM = DHKEM(P-256, HKDF-SHA256)` (0x0010).
 const KEM_ID: &[u8; 5] = b"KEM\x00\x10";
@@ -280,6 +281,14 @@ pub fn unwrap_fcs_key(auth_data: &[u8], key_pem: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| anyhow!("wrapped-key is not base64: {e}"))?;
     let sk = parse_private_key_pem(key_pem)?;
     open(&enc, &wrapped, b"", &sk)
+}
+
+/// Reads the FCS private key at `path` and unwraps the archive's symmetric
+/// key from its auth data.
+pub fn fcs_symmetric_key(auth_data: &[u8], key_path: &Path) -> Result<Vec<u8>> {
+    let pem = std::fs::read(key_path)
+        .map_err(|e| anyhow!("cannot read FCS key {}: {e}", key_path.display()))?;
+    unwrap_fcs_key(auth_data, &pem)
 }
 
 /// Scans the auth-data key-value blob for `key` and returns its value.

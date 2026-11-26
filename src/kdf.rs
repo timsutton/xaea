@@ -17,9 +17,27 @@ fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> Key {
     okm
 }
 
+/// HKDF-SHA256 with caller-chosen output length.
+fn hkdf_len(ikm: &[u8], salt: &[u8], info: &[u8], out: &mut [u8]) {
+    hkdf::Hkdf::<Sha256>::new(Some(salt), ikm)
+        .expand(info, out)
+        .expect("HKDF expand of bounded size cannot fail");
+}
+
 /// `prefix || index` (little-endian), the info string of the indexed keys.
 fn indexed_info(prefix: &[u8], index: u32) -> Vec<u8> {
     [prefix, &index.to_le_bytes()].concat()
+}
+
+/// Raw HMAC-SHA256 with no salt prefix or length suffix. The encrypted
+/// root-header MAC (profile 1) is computed this way, unlike every profile-0
+/// MAC, which goes through [`mac`].
+pub fn mac_raw(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use hmac::{Hmac, Mac as _};
+    let mut mac = <Hmac<sha2::Sha256> as hmac::KeyInit>::new_from_slice(key)
+        .expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
 }
 
 /// MAC calculation (kinnay FORMAT.md): HMAC-SHA256 over `salt || data || u64le(len(salt))`.
@@ -57,6 +75,42 @@ pub fn cluster_header_key(ck: &Key) -> Key {
 /// Xcode 27.3 b2: global index fails from cluster 1 onward).
 pub fn segment_key(ck: &Key, segment_index: u32) -> Key {
     hkdf(ck, b"", &indexed_info(b"AEA_SK", segment_index))
+}
+
+/// Profile-1 key material is an 80-byte Expand output: MAC key (32) ||
+/// AES-256 key (32) || IV (16). The profile-0 helpers above derive 32-byte
+/// HMAC keys only; encrypted archives need the full triple.
+pub const DATA_KEY_MATERIAL_LEN: usize = 80;
+
+/// Profile-1 root-header material from the main key: Expand from
+/// Extract(main key, 32 zero bytes), info `"AEA_RHEK"`. The archive's main
+/// salt is used only for the main key itself.
+pub fn root_header_material(main_key: &Key) -> [u8; DATA_KEY_MATERIAL_LEN] {
+    let mut out = [0u8; DATA_KEY_MATERIAL_LEN];
+    hkdf_len(main_key, &[0u8; 32], b"AEA_RHEK", &mut out);
+    out
+}
+
+/// Profile-1 cluster-header material from a cluster key: Expand from
+/// Extract(cluster key, 32 zero bytes), info `"AEA_CHEK"`.
+pub fn cluster_header_material(ck: &Key) -> [u8; DATA_KEY_MATERIAL_LEN] {
+    let mut out = [0u8; DATA_KEY_MATERIAL_LEN];
+    hkdf_len(ck, &[0u8; 32], b"AEA_CHEK", &mut out);
+    out
+}
+
+/// Profile-1 segment material from a cluster key, keyed by the cluster-local
+/// segment index: Expand from Extract(cluster key, 32 zero bytes), info
+/// `"AEA_SK" + u32le(index)`.
+pub fn segment_material(ck: &Key, segment_index: u32) -> [u8; DATA_KEY_MATERIAL_LEN] {
+    let mut out = [0u8; DATA_KEY_MATERIAL_LEN];
+    hkdf_len(
+        ck,
+        &[0u8; 32],
+        &indexed_info(b"AEA_SK", segment_index),
+        &mut out,
+    );
+    out
 }
 
 #[cfg(test)]

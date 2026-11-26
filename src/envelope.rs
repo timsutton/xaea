@@ -2,16 +2,22 @@
 //! with errata verified against Apple's real Xcode 27.3 beta 2 artifact
 //! (see doc/FORMAT-NOTES.md).
 
+use crate::hpke;
 use crate::kdf::{self, Key};
+use crate::lzfse;
 use crate::xz::{self, XzDecoder};
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::path::Path;
 
 pub const ROOT_HEADER_LEN: usize = 0x30;
 pub const SIGNATURE_LEN: usize = 128;
 /// Every MAC in the envelope is an HMAC-SHA256.
 const MAC_LEN: usize = 32;
+/// Encrypted root header (profile 1): root MAC, AES-CTR-encrypted 48-byte
+/// root header, next-cluster MAC.
+const ENC_ROOT_HEADER_LEN: usize = 112;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile(pub [u8; 3]);
