@@ -7,6 +7,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* `--compress-mode fast`: a faster compression policy for `xaea extract` that
+  skips files under 1 MiB, gives up after 1 MiB, and only keeps files that
+  save at least 10% — less CPU on the writer threads, more disk. The default
+  `--compress-mode balanced` keeps Apple's extractor policy unchanged.
+* `--compress-mode lz4`: an opt-in, macOS 27+ mode that stores files with
+  LZ4 instead of LZBITMAP (the fastest codec the kernel reads), using the
+  fast policy. Produces files Apple's extractor would not write and that
+  older macOS releases cannot read, so it is never the default; it falls
+  back to LZBITMAP with a warning when the kernel does not accept LZ4.
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
 

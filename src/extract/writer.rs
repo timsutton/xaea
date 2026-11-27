@@ -1,6 +1,7 @@
 //! Writer threads: they execute every filesystem syscall of the stream
 //! phase, and the final link and directory-mode passes.
 
+use super::Compression;
 use super::links::{Link, link_pass};
 use crate::aa::Piece;
 use crate::decmpfs;
@@ -156,6 +157,9 @@ pub(super) struct Writer {
     /// Open file being written; closed when the next Open, a Flush, or the
     /// channel end arrives.
     cur: Option<OpenFile>,
+    /// The resolved compression config, when this run stores compressed
+    /// files.
+    compression: Option<Compression>,
     /// Set when this run stores files compressed.
     enc: Option<decmpfs::Encoder>,
     /// Files the volume refused to store compressed (written plain).
@@ -169,7 +173,7 @@ impl Writer {
     pub(super) fn new(
         root: PathBuf,
         file_default: u32,
-        compress: bool,
+        compression: Option<Compression>,
         link_workers: usize,
         load: Option<(Load, usize)>,
     ) -> Self {
@@ -178,7 +182,8 @@ impl Writer {
             file_default,
             link_workers,
             cur: None,
-            enc: compress.then(decmpfs::Encoder::new),
+            enc: compression.map(|c| decmpfs::Encoder::new(c.policy, c.codec)),
+            compression,
             refused: 0,
             load,
         }
@@ -273,8 +278,14 @@ impl Writer {
             r => r,
         }
         .with_context(|| format!("create {}", full.display()))?;
-        // Empty files stay plain, as Apple's extractor leaves them.
-        let compressing = size > 0 && self.enc.is_some();
+        // Empty files stay plain, as Apple's extractor leaves them. The
+        // policy's floor is the same idea with a size: small files carry a
+        // fixed per-file cost and save little disk, so they stay plain.
+        let compressing = size > 0
+            && self.enc.is_some()
+            && self
+                .compression
+                .is_some_and(|c| size >= c.policy.min_file_bytes);
         // Skip fchmod when open(2) already produced the mode via the
         // umask default — see create_defaults() for the rationale.
         let chmod = (mode != self.file_default).then_some(mode);

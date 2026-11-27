@@ -1,6 +1,6 @@
 //! Command-line interface definition.
 
-use crate::extract::Compress;
+use crate::extract::{Compress, CompressMode};
 use crate::xz::XzDecoder;
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
@@ -105,6 +105,16 @@ pub struct ExtractArgs {
     /// space (default on Linux)
     #[arg(long, overrides_with = "compress")]
     pub no_compress: bool,
+    /// Compression policy: `balanced` matches Apple's extractor (compress
+    /// everything that clearly pays, the default); `fast` skips small files
+    /// entirely, gives up after 1 MiB, and only keeps files that save at
+    /// least 10% — less CPU on the writer threads, more disk; `lz4` uses
+    /// LZ4 instead of LZBITMAP (macOS 27+ only, produces files Apple's
+    /// extractor would not write, falls back to LZBITMAP otherwise) with
+    /// the fast policy. Ignored when compression is off (Linux, unsupported
+    /// volume, `--no-compress`).
+    #[arg(long, value_enum, default_value_t = CompressMode::Balanced)]
+    pub compress_mode: CompressMode,
 }
 
 #[derive(Args)]

@@ -42,8 +42,13 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
     let decoders = args.jobs.unwrap_or_else(|| cores.saturating_sub(1).max(2));
     // Output I/O (it may create `out` to probe it), so it joins the other
     // output-side failures under code 6.
-    let compress = extract::resolve_compress(out, args.compress_policy(), args.dry_run)
-        .with_exit(Exit::Extraction)?;
+    let compression = extract::resolve_compress(
+        out,
+        args.compress_policy(),
+        args.dry_run,
+        args.compress_mode,
+    )
+    .with_exit(Exit::Extraction)?;
     let opts = extract::Opts {
         out: out.to_path_buf(),
         dry: args.dry_run,
@@ -51,7 +56,9 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
         // Compressing makes writers CPU-bound (LZBITMAP runs ~350 MB/s per
         // core), so they want more threads: on M3 Max, 6 → 13.7 s, 8 → 12.7 s,
         // 10 → 12.6 s, 14 → 12.4 s for the Xcode 27.3 b2 archive.
-        writers: args.writers.unwrap_or(if compress { 10 } else { 6 }),
+        writers: args
+            .writers
+            .unwrap_or(if compression.is_some() { 10 } else { 6 }),
         readahead: args.readahead.unwrap_or_else(|| {
             let largest = env.segments().map(|s| s.orig as usize).max().unwrap_or(0);
             extract::default_readahead(extract::physical_ram(), largest, decoders)
@@ -59,7 +66,8 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
         prealloc: args.prealloc,
         verify: !args.no_verify,
         decoder: args.decoder,
-        compress,
+        compression,
+        compress_mode: args.compress_mode,
     };
     let st = extract::extract(&env, &archive.src.path, &opts).with_exit(Exit::Extraction)?;
     let secs = t0.elapsed().as_secs_f64();
@@ -73,6 +81,8 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
                 "verified": opts.verify,
                 "decoder": args.decoder.name(),
                 "decoders": opts.decoders, "writers": opts.writers, "readahead": opts.readahead,
+                "compress_mode": opts.compress_mode.name(),
+                "compress_codec": opts.compression.map_or("none", |c| c.codec.name()),
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "compressed": st.compressed,
                 "seconds": secs, "mib_per_s": rate,

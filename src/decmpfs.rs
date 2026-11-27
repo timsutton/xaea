@@ -13,6 +13,10 @@
 //! for a slightly worse ratio. We do the same, and match the policy measured on
 //! its Xcode 27.3 b2 output (see doc/FORMAT-NOTES.md):
 //!
+//! An opt-in LZ4 codec (`--compress-mode lz4`) trades ratio for speed on
+//! macOS 27+ (the kernel's LZ4 decompressor), writing types 15/16. It is not
+//! what Apple writes and is never the default.
+//!
 //! * **type 13** (LZBITMAP, inline): files that fit in one 64 KiB chunk whose
 //!   encoded chunk plus the header is ≤ 3584 bytes. The chunk lives in the
 //!   xattr, so the file takes no data blocks at all;
@@ -41,15 +45,96 @@ const BLOCK: u64 = 4096;
 const RAW_MARK: u8 = 0xFF;
 const TYPE_INLINE: u32 = 13;
 const TYPE_RSRC: u32 = 14;
-/// After this many input bytes, give up on a file that has saved < 2%:
-/// archives, images and the large `.pkg` payloads never get better, and
-/// encoding them only to decode them again is wasted CPU.
-const GIVE_UP_AFTER: u64 = 2 << 20;
+/// LZ4 decmpfs types: inline / resource fork (macOS 27+).
+const TYPE_INLINE_LZ4: u32 = 15;
+const TYPE_RSRC_LZ4: u32 = 16;
+/// How aggressively to compress. The writer consults this at open time
+/// (`min_file_bytes`) and the encoder consults it at every chunk
+/// (`give_up_after` / `floor_pct`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Policy {
+    /// Files smaller than this are never compressed; the writer stores them
+    /// plainly. Fixed per-file overhead (encoder, xattrs, flag) is a large
+    /// share of the work on small files and the absolute savings are tiny.
+    pub min_file_bytes: u64,
+    /// After this many fed bytes, a file that has saved less than
+    /// `floor_pct` percent is written plain. Archives, images and the
+    /// large `.pkg` payloads never get better, and encoding them only to
+    /// decode them again is wasted CPU.
+    pub give_up_after: u64,
+    /// The savings floor, in percent. A file must have saved at least this
+    /// much of the bytes fed so far, else it is written plain.
+    pub floor_pct: u64,
+}
+
+impl Policy {
+    /// Apple's extractor's policy (the default): give up after 2 MiB on a
+    /// file saving less than 2%.
+    pub fn balanced() -> Self {
+        Policy {
+            min_file_bytes: 0,
+            give_up_after: 2 << 20,
+            floor_pct: 2,
+        }
+    }
+    /// Faster, less disk-saving: skip small files entirely, give up after
+    /// 1 MiB, and only keep files that clearly save at least 10%.
+    pub fn fast() -> Self {
+        Policy {
+            min_file_bytes: 1 << 20,
+            give_up_after: 1 << 20,
+            floor_pct: 10,
+        }
+    }
+}
+
+/// Which codec to use for the compressed chunks. Apple's extractor writes
+/// LZBITMAP (types 13/14); the opt-in LZ4 codec (types 15/16) is for
+/// macOS 27+ only and is not what Apple writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    /// LZBITMAP (`COMPRESSION_LZBITMAP`, 0x702), types 13/14. macOS 12+.
+    Lzbitmap,
+    /// LZ4 (`COMPRESSION_LZ4`, 0x100), types 15/16. macOS 27+.
+    Lz4,
+}
+
+impl Codec {
+    /// Machine-readable name for `--json` output and probe messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Codec::Lzbitmap => "lzbitmap",
+            Codec::Lz4 => "lz4",
+        }
+    }
+    /// The macOS version that can read this codec's files.
+    pub fn requirement(self) -> &'static str {
+        match self {
+            Codec::Lzbitmap => "macOS 12 or later",
+            Codec::Lz4 => "macOS 27 or later",
+        }
+    }
+    /// The decmpfs type numbers (inline / resource fork) for this codec.
+    pub fn types(self) -> (u32, u32) {
+        match self {
+            Codec::Lzbitmap => (TYPE_INLINE, TYPE_RSRC),
+            Codec::Lz4 => (TYPE_INLINE_LZ4, TYPE_RSRC_LZ4),
+        }
+    }
+}
+
+/// Whether a file worth keeping, given `done` bytes fed and `stored` bytes
+/// of resource fork so far.
+fn worth_keeping(done: u64, stored: u64, policy: &Policy) -> bool {
+    !(done >= policy.give_up_after && stored * 100 >= done * (100 - policy.floor_pct))
+}
 
 #[cfg(target_os = "macos")]
 mod ffi {
     /// COMPRESSION_LZBITMAP (<compression.h>, macOS 12+).
     pub const LZBITMAP: i32 = 0x702;
+    /// COMPRESSION_LZ4 (<compression.h>, OS X 10.11+).
+    pub const LZ4: i32 = 0x100;
 
     #[link(name = "compression")]
     unsafe extern "C" {
@@ -91,6 +176,38 @@ fn lzbitmap_encode(dst: &mut [u8], src: &[u8], scratch: &mut [u8]) -> usize {
 }
 
 #[cfg(target_os = "macos")]
+fn lz4_encode(dst: &mut [u8], src: &[u8], scratch: &mut [u8]) -> usize {
+    // SAFETY: every pointer is valid for the length passed with it, and the
+    // scratch buffer is the size libcompression asked for.
+    unsafe {
+        ffi::compression_encode_buffer(
+            dst.as_mut_ptr(),
+            dst.len(),
+            src.as_ptr(),
+            src.len(),
+            scratch.as_mut_ptr().cast(),
+            ffi::LZ4,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lz4_decode(dst: &mut [u8], src: &[u8]) -> usize {
+    // SAFETY: both pointers are valid for the lengths passed; a null scratch
+    // makes libcompression allocate its own.
+    unsafe {
+        ffi::compression_decode_buffer(
+            dst.as_mut_ptr(),
+            dst.len(),
+            src.as_ptr(),
+            src.len(),
+            std::ptr::null_mut(),
+            ffi::LZ4,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn lzbitmap_decode(dst: &mut [u8], src: &[u8]) -> usize {
     // SAFETY: both pointers are valid for the lengths passed; a null scratch
     // makes libcompression allocate its own.
@@ -107,9 +224,13 @@ fn lzbitmap_decode(dst: &mut [u8], src: &[u8]) -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn scratch_size() -> usize {
+fn scratch_size(codec: Codec) -> usize {
+    let algorithm = match codec {
+        Codec::Lzbitmap => ffi::LZBITMAP,
+        Codec::Lz4 => ffi::LZ4,
+    };
     // SAFETY: no preconditions.
-    unsafe { ffi::compression_encode_scratch_buffer_size(ffi::LZBITMAP) }
+    unsafe { ffi::compression_encode_scratch_buffer_size(algorithm) }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -121,7 +242,15 @@ fn lzbitmap_decode(_: &mut [u8], _: &[u8]) -> usize {
     0
 }
 #[cfg(not(target_os = "macos"))]
-fn scratch_size() -> usize {
+fn lz4_encode(_: &mut [u8], _: &[u8], _: &mut [u8]) -> usize {
+    0
+}
+#[cfg(not(target_os = "macos"))]
+fn lz4_decode(_: &mut [u8], _: &[u8]) -> usize {
+    0
+}
+#[cfg(not(target_os = "macos"))]
+fn scratch_size(_: Codec) -> usize {
     0
 }
 
@@ -202,6 +331,8 @@ pub enum Outcome {
 /// `abandon` part-way). Holds one file's compressed bytes in memory, which
 /// for an Xcode tree is at most a few tens of MiB.
 pub struct Encoder {
+    policy: Policy,
+    codec: Codec,
     scratch: Vec<u8>,
     /// Bytes of the current chunk not yet encoded (only when a chunk spans
     /// two pushes).
@@ -216,14 +347,16 @@ pub struct Encoder {
 
 impl Default for Encoder {
     fn default() -> Self {
-        Self::new()
+        Self::new(Policy::balanced(), Codec::Lzbitmap)
     }
 }
 
 impl Encoder {
-    pub fn new() -> Self {
+    pub fn new(policy: Policy, codec: Codec) -> Self {
         Encoder {
-            scratch: vec![0u8; scratch_size().max(1)],
+            policy,
+            codec,
+            scratch: vec![0u8; scratch_size(codec).max(1)],
             stage: Vec::with_capacity(CHUNK),
             rsrc: Vec::new(),
             nchunks: 0,
@@ -283,7 +416,7 @@ impl Encoder {
         self.stage.extend_from_slice(data);
         let done = (self.next_chunk * CHUNK) as u64;
         let stored = (self.rsrc.len() - (self.nchunks + 1) * 4) as u64;
-        Ok(!(done >= GIVE_UP_AFTER && stored * 50 >= done * 49))
+        Ok(worth_keeping(done, stored, &self.policy))
     }
 
     fn chunk_len(&self, i: usize) -> usize {
@@ -298,7 +431,10 @@ impl Encoder {
         // offer exactly `src.len()` bytes of room: libcompression returns 0
         // when the stream doesn't fit, and the raw form (1 + len) wins.
         self.rsrc.resize(start + src.len(), 0);
-        let n = lzbitmap_encode(&mut self.rsrc[start..], src, &mut self.scratch);
+        let n = match self.codec {
+            Codec::Lzbitmap => lzbitmap_encode(&mut self.rsrc[start..], src, &mut self.scratch),
+            Codec::Lz4 => lz4_encode(&mut self.rsrc[start..], src, &mut self.scratch),
+        };
         if n == 0 {
             self.rsrc.truncate(start);
             self.rsrc.push(RAW_MARK);
@@ -322,8 +458,9 @@ impl Encoder {
         let mut header = [0u8; HEADER_LEN];
         header[..4].copy_from_slice(b"fpmc");
         header[8..].copy_from_slice(&self.size.to_le_bytes());
+        let (inline_type, rsrc_type) = self.codec.types();
         if self.nchunks == 1 && HEADER_LEN + (end - table) <= MAX_INLINE_XATTR {
-            header[4..8].copy_from_slice(&TYPE_INLINE.to_le_bytes());
+            header[4..8].copy_from_slice(&inline_type.to_le_bytes());
             let mut x = Vec::with_capacity(HEADER_LEN + end - table);
             x.extend_from_slice(&header);
             x.extend_from_slice(&self.rsrc[table..]);
@@ -342,7 +479,7 @@ impl Encoder {
             "resource fork too large ({end} bytes)"
         );
         self.rsrc[self.nchunks * 4..table].copy_from_slice(&(end as u32).to_le_bytes());
-        header[4..8].copy_from_slice(&TYPE_RSRC.to_le_bytes());
+        header[4..8].copy_from_slice(&rsrc_type.to_le_bytes());
         // Fork first, then the header, then the flag: until the flag is set
         // the file reads as empty, never as half-built.
         if fsetxattr(f, c"com.apple.ResourceFork", &self.rsrc).is_ok()
@@ -373,8 +510,15 @@ impl Encoder {
             let plain: &[u8] = if enc.first() == Some(&RAW_MARK) {
                 &enc[1..]
             } else {
-                let n = lzbitmap_decode(&mut buf[..want], enc);
-                ensure!(n == want, "LZBITMAP round trip failed in chunk {i}");
+                let n = match self.codec {
+                    Codec::Lzbitmap => lzbitmap_decode(&mut buf[..want], enc),
+                    Codec::Lz4 => lz4_decode(&mut buf[..want], enc),
+                };
+                ensure!(
+                    n == want,
+                    "{} round trip failed in chunk {i}",
+                    self.codec.name()
+                );
                 &buf[..want]
             };
             ensure!(plain.len() == want, "chunk {i} has the wrong length");
@@ -397,11 +541,12 @@ impl Encoder {
     }
 }
 
-/// Check, once per extraction, that `dir`'s volume stores and reads back an
-/// LZBITMAP-compressed file (both layouts). Fails on non-APFS/HFS+ volumes,
-/// on network shares that drop the flag, and on macOS releases without
-/// LZBITMAP. Leaves nothing behind.
-pub fn probe(dir: &Path) -> Result<()> {
+/// Check, once per extraction, that `dir`'s volume stores and reads back a
+/// `codec`-compressed file (both layouts). Fails on non-APFS/HFS+ volumes,
+/// on network shares that drop the flag, and on macOS releases without the
+/// codec (LZBITMAP needs macOS 12+, LZ4 needs macOS 27+). Leaves nothing
+/// behind.
+pub fn probe(dir: &Path, codec: Codec) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("transparent compression is only available on macOS");
     }
@@ -409,7 +554,7 @@ pub fn probe(dir: &Path) -> Result<()> {
     let data: Vec<u8> = (0..CHUNK + 4000)
         .map(|i| b"xaea decmpfs probe "[i % 19])
         .collect();
-    let mut enc = Encoder::new();
+    let mut enc = Encoder::new(Policy::balanced(), codec);
     for (k, body) in [&data[..], &data[..100]].into_iter().enumerate() {
         let p = dir.join(format!(
             ".xaea-compression-probe-{}-{k}",
@@ -425,7 +570,9 @@ pub fn probe(dir: &Path) -> Result<()> {
             enc.push(body)?;
             ensure!(
                 k > 0 || enc.rsrc.len() < body.len() / 2,
-                "LZBITMAP is unavailable (macOS 12 or later is required)"
+                "{} is unavailable ({} required)",
+                codec.name(),
+                codec.requirement()
             );
             ensure!(
                 enc.finish(&f)? == Outcome::Compressed,
@@ -434,7 +581,9 @@ pub fn probe(dir: &Path) -> Result<()> {
             drop(f);
             ensure!(
                 std::fs::read(&p)? == body,
-                "the volume does not read compressed files back correctly"
+                "the volume does not read {} files back ({} required)",
+                codec.name(),
+                codec.requirement()
             );
             Ok(())
         })();
@@ -475,9 +624,19 @@ mod tests {
     }
 
     fn roundtrip(dir: &Path, name: &str, body: &[u8], pieces: usize) -> Outcome {
+        roundtrip_codec(dir, name, body, pieces, Codec::Lzbitmap)
+    }
+
+    fn roundtrip_codec(
+        dir: &Path,
+        name: &str,
+        body: &[u8],
+        pieces: usize,
+        codec: Codec,
+    ) -> Outcome {
         let p = dir.join(name);
         let f = File::create(&p).unwrap();
-        let mut enc = Encoder::new();
+        let mut enc = Encoder::new(Policy::balanced(), codec);
         enc.begin(body.len() as u64);
         let step = body.len().div_ceil(pieces.max(1)).max(1);
         let mut plain = false;
@@ -505,7 +664,7 @@ mod tests {
 
     #[test]
     fn layouts_round_trip() {
-        if let Err(e) = probe(&std::env::temp_dir()) {
+        if let Err(e) = probe(&std::env::temp_dir(), Codec::Lzbitmap) {
             eprintln!("skipping: temp volume does not support compression: {e:#}");
             return;
         }
@@ -543,5 +702,74 @@ mod tests {
             Outcome::Plain
         );
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn layouts_round_trip_lz4() {
+        if let Err(e) = probe(&std::env::temp_dir(), Codec::Lz4) {
+            eprintln!("skipping: LZ4 not available: {e:#}");
+            return;
+        }
+        let d = tmpdir("rt-lz4");
+        // Inline: tiny and one-chunk-but-compressible.
+        assert_eq!(
+            roundtrip_codec(&d, "tiny", b"hi\n", 1, Codec::Lz4),
+            Outcome::Compressed
+        );
+        assert_eq!(
+            roundtrip_codec(&d, "text40k", &text(40_000), 3, Codec::Lz4),
+            Outcome::Compressed
+        );
+        // Resource fork, chunk boundaries split across odd-sized pushes.
+        assert_eq!(
+            roundtrip_codec(&d, "text1m", &text(1_000_003), 7, Codec::Lz4),
+            Outcome::Compressed
+        );
+        // Incompressible: kept plain.
+        assert_eq!(
+            roundtrip_codec(&d, "noise100k", &noise(100_000, 3), 2, Codec::Lz4),
+            Outcome::Plain
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn balanced_matches_apples_policy() {
+        // Apple's extractor: give up after 2 MiB on a file saving < 2%.
+        let b = Policy::balanced();
+        assert_eq!(b.min_file_bytes, 0);
+        assert_eq!(b.give_up_after, 2 << 20);
+        assert_eq!(b.floor_pct, 2);
+        // <2% saved: not worth keeping. More than 2% saved: keep.
+        let done = b.give_up_after;
+        assert!(!worth_keeping(done, done * 99 / 100, &b));
+        assert!(worth_keeping(done, done * 97 / 100, &b));
+    }
+
+    #[test]
+    fn fast_is_stricter_and_skips_small_files() {
+        // Fast: skip small files, give up after 1 MiB, keep only >=10% saved.
+        let f = Policy::fast();
+        assert_eq!(f.min_file_bytes, 1 << 20);
+        assert_eq!(f.give_up_after, 1 << 20);
+        assert_eq!(f.floor_pct, 10);
+        // 5% saved: not worth keeping. More than 10% saved: keep.
+        let done = f.give_up_after;
+        assert!(!worth_keeping(done, done * 95 / 100, &f));
+        assert!(worth_keeping(done, done * 89 / 100, &f));
+    }
+
+    #[test]
+    fn give_up_only_after_the_threshold() {
+        // Under the give-up threshold, any savings keep the file.
+        let f = Policy::fast();
+        assert!(worth_keeping(f.give_up_after - 1, 99_999, &f));
+        // Above the threshold, a barely-saving file is dropped.
+        assert!(!worth_keeping(f.give_up_after, f.give_up_after - 1, &f));
     }
 }
