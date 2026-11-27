@@ -321,6 +321,11 @@ fn parse_profile1<'a>(
     // without rejecting spec-legal small geometries.
     ensure!(root.segment_size >= 0x1000, "segment size too small");
     ensure!(root.segments_per_cluster >= 1, "no segments per cluster");
+    ensure!(
+        matches!(root.compression, Compression::None | Compression::Lzfse),
+        "unsupported profile-1 compression {} (only none/LZFSE are supported)",
+        root.compression
+    );
 
     // Walk clusters from the file size: each cluster header is padded to
     // the full segments-per-cluster capacity, so `cur` is the exact file

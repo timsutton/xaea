@@ -22,15 +22,19 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
     // `archive.src` (for `-`, the spool) must outlive extract(), which
     // re-opens the path for its pread segment reads.
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
-    if env.profile.encrypted() {
+    // Encrypted profiles carry a restore-image payload, not an AA01 stream:
+    // extraction of restore images is outside xaea's scope (see README).
+    // Inspect/verify support profile 1.
+    let map = &archive.map;
+    if map.len() >= 7 && crate::envelope::Profile([map[4], map[5], map[6]]).encrypted() {
         bail_exit!(
             Exit::Rejected,
-            "profile {} is encrypted: extraction supports profile 0 only \
-             (encrypted profiles are inspect-only; supply a passphrase/KEM key in a future version)",
-            env.profile.id()
+            "profile {} archives carry a restore-image payload, which xaea cannot extract \
+             yet (inspect/verify work: `xaea inspect --verify`)",
+            crate::envelope::Profile([map[4], map[5], map[6]]).id()
         );
     }
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     // No up-front "dir must be empty" check any more: extracting into a
     // populated directory (the cwd, by default) is fine. Collisions with
     // the archive's own top-level entries are caught by the extractor

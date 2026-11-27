@@ -25,15 +25,19 @@ pub fn run(args: &CatArgs) -> Result<()> {
     // same member.
     let want = sanitize(args.member.as_bytes()).with_exit(Exit::Usage)?;
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
-    if env.profile.encrypted() {
+    // Encrypted archives carry a restore-image payload, not an AA01 stream:
+    // cat prints a member out of the payload, which xaea cannot do yet.
+    // Inspect/verify support profile 1.
+    let map = &archive.map;
+    if map.len() >= 7 && crate::envelope::Profile([map[4], map[5], map[6]]).encrypted() {
         bail_exit!(
             Exit::Rejected,
-            "profile {} is encrypted: cat supports profile 0 only \
-             (encrypted profiles are inspect-only)",
-            env.profile.id()
+            "profile {} archives carry a restore-image payload, which xaea cannot cat \
+             yet (inspect/verify work: `xaea inspect --verify`)",
+            crate::envelope::Profile([map[4], map[5], map[6]]).id()
         );
     }
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     // The pipeline (up-front authenticity gates, decode, parse, print) is
     // tagged with the extraction exit class, same as `extract`.
     pipeline(&env, &archive.src.path, &want, args).with_exit(Exit::Extraction)

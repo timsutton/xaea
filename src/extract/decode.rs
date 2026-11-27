@@ -35,7 +35,7 @@ pub(crate) struct SegInfo {
 }
 
 impl SegInfo {
-    pub(crate) fn new(seg: &Segment, verify: bool) -> Self {
+    pub(crate) fn new(seg: &Segment<'_, '_>, verify: bool) -> Self {
         SegInfo {
             off: seg.data_off as u64,
             comp: seg.comp,
