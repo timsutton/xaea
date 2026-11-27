@@ -35,6 +35,31 @@ pub fn open_archive(path: &Path) -> Result<OpenArchive> {
     Ok(OpenArchive { src, map })
 }
 
+/// Reads a PEM private key and HPKE-unwraps the FCS symmetric key it
+/// unlocks for the archive's auth data, the main key source of encrypted
+/// profiles.
+pub fn fcs_key_for(file: &[u8], key_path: &Path) -> Result<Vec<u8>> {
+    if file.len() < 12 {
+        anyhow::bail!("not an AEA file (too short)");
+    }
+    let authsize = u32::from_le_bytes(file[8..12].try_into().expect("length checked")) as usize;
+    let auth_start = 12usize;
+    let auth_end = auth_start
+        .checked_add(authsize)
+        .context("auth size overflow")?;
+    anyhow::ensure!(auth_end < file.len(), "auth data runs past EOF");
+    fcs_key(&file[auth_start..auth_end], key_path)
+}
+
+/// Reads a PEM private key and HPKE-unwraps the FCS symmetric key it
+/// unlocks for `auth`, the main key source of encrypted profiles.
+pub fn fcs_key(auth: &[u8], key_path: &Path) -> Result<Vec<u8>> {
+    let pem = std::fs::read(key_path)
+        .with_context(|| format!("open {}", key_path.display()))
+        .with_exit(Exit::Unreadable)?;
+    crate::hpke::unwrap_fcs_key(auth, &pem)
+}
+
 /// `n` bytes in binary units with two decimals, e.g. `9.71 GiB`.
 pub fn human(n: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];

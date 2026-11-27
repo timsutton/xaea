@@ -2,14 +2,12 @@
 //! with errata verified against Apple's real Xcode 27.3 beta 2 artifact
 //! (see doc/FORMAT-NOTES.md).
 
-use crate::hpke;
 use crate::kdf::{self, Key};
 use crate::lzfse;
 use crate::xz::{self, XzDecoder};
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::path::Path;
 
 pub const ROOT_HEADER_LEN: usize = 0x30;
 pub const SIGNATURE_LEN: usize = 128;
@@ -18,6 +16,27 @@ const MAC_LEN: usize = 32;
 /// Encrypted root header (profile 1): root MAC, AES-CTR-encrypted 48-byte
 /// root header, next-cluster MAC.
 const ENC_ROOT_HEADER_LEN: usize = 112;
+/// Per-cluster and per-segment AES-256-CTR key material: 32-byte HMAC key,
+/// 32-byte AES key, 16-byte IV.
+const DATA_KEY_MATERIAL_LEN: usize = 80;
+
+/// The FCS symmetric key of an encrypted archive, recovered out-of-band
+/// (see [`crate::hpke::unwrap_fcs_key`]). It is the IKM of the main key,
+/// derived during parsing; profile 0 derives its main key from the signing
+/// public key instead, so it needs no key material.
+pub struct MainKey(Key);
+
+impl MainKey {
+    pub fn from_slice(b: &[u8]) -> Result<Self> {
+        let key: Key = b.try_into().context("FCS symmetric key must be 32 bytes")?;
+        Ok(MainKey(key))
+    }
+
+    /// The recovered symmetric key itself.
+    pub fn as_slice(&self) -> &Key {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile(pub [u8; 3]);
@@ -148,15 +167,23 @@ pub struct Cluster {
     pub nextchmac_off: usize,
     pub seghmacs_off: usize,
     pub data_off: usize,
+    /// Profile 1: the decrypted segment-header region. The file holds the
+    /// AES-CTR-encrypted headers, so the decrypted copy is kept here for
+    /// [`Envelope::segments`]. `None` for profile 0, whose headers are
+    /// stored in plaintext at `seghdrs_off`.
+    pub decrypted_headers: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
-pub struct Segment<'a> {
+pub struct Segment<'a, 'b> {
     pub index: u32,
     pub cluster: u32,
     pub orig: u32,
     pub comp: u32,
-    pub cksum: &'a [u8],
+    /// The stored checksum bytes. Profile 1 reads these from the decrypted
+    /// cluster header (owned by the envelope), so it has a shorter lifetime
+    /// than the file-slice fields.
+    pub cksum: &'b [u8],
     pub mac: &'a [u8],
     pub data: &'a [u8],
     /// Absolute file offset of the segment's stored bytes (for pread-based
@@ -181,6 +208,10 @@ pub struct Envelope<'a> {
     pub root: RootHeader,
     pub clusters: Vec<Cluster>,
     pub total_segments: u64,
+    /// Profile 1 only: the derived main key (AEA_AMK), recovered during
+    /// parsing. Profile 0 derives it on demand from the signing public key
+    /// ([`Envelope::main_key`]).
+    pub main: Option<Key>,
 }
 
 /// Root and cluster header MAC results.
@@ -224,18 +255,191 @@ fn mac_at(b: &[u8], at: usize) -> &[u8; MAC_LEN] {
         .expect("MAC offsets are validated by Envelope::parse")
 }
 
+/// Profile-1 (SymmetricEncryption) parsing: derive the main key from the
+/// FCS symmetric key, verify and decrypt the root header, then walk the
+/// clusters that are actually present in `file`. The walk is bounded by
+/// the file size rather than the declared `original_size`, because an
+/// encrypted archive may be truncated (e.g. a head-only fetch).
+fn parse_profile1<'a>(
+    file: &'a [u8],
+    auth: Vec<(String, Vec<u8>)>,
+    auth_start: usize,
+    auth_end: usize,
+    sig_off: usize,
+    off: usize,
+    key: &MainKey,
+) -> Result<Envelope<'a>> {
+    let profile = Profile([file[4], file[5], file[6]]);
+    let scrypt_strength = file[7];
+    let main_salt_off = off;
+    let rootmac_off = off + 32;
+    let root_off = off + 64;
+    let chmac_off = off + 112;
+    ensure!(
+        rootmac_off + ENC_ROOT_HEADER_LEN <= file.len(),
+        "truncated: no room for the encrypted root header"
+    );
+
+    let main = kdf::main_key_sym(
+        key.as_slice(),
+        &file[main_salt_off..main_salt_off + 32],
+        &file[4..8],
+    );
+
+    // Root-header MAC: raw HMAC over clusterMAC || authData || encData ||
+    // u64le(32 + authSize).
+    let rh_mat = kdf::root_header_material(&main);
+    ensure!(
+        rh_mat.len() == DATA_KEY_MATERIAL_LEN,
+        "bad root-header material length"
+    );
+    let stored_root_mac = mac_at(file, rootmac_off);
+    let rh_enc = &file[root_off..root_off + ROOT_HEADER_LEN];
+    let cluster_mac_stored = &file[chmac_off..chmac_off + MAC_LEN];
+    let auth_data = &file[auth_start..auth_end];
+    let mut rh_mac_data = Vec::with_capacity(32 + auth_data.len() + 48 + 8);
+    rh_mac_data.extend_from_slice(cluster_mac_stored);
+    rh_mac_data.extend_from_slice(auth_data);
+    rh_mac_data.extend_from_slice(rh_enc);
+    rh_mac_data.extend_from_slice(&(32usize + auth_data.len()).to_le_bytes());
+    ensure!(
+        kdf::mac_raw(&rh_mat[0..32], &rh_mac_data) == *stored_root_mac,
+        "root header MAC mismatch"
+    );
+
+    let mut root_plain = rh_enc.to_vec();
+    lzfse::aes_ctr_decrypt(&rh_mat, &mut root_plain)?;
+    let root = RootHeader {
+        original_size: u64le(&root_plain, 0x0)?,
+        encarchive_size: u64le(&root_plain, 0x8)?,
+        segment_size: u32le(&root_plain, 0x10)?,
+        segments_per_cluster: u32le(&root_plain, 0x14)?,
+        compression: root_plain[0x18].try_into()?,
+        checksum: root_plain[0x19].try_into()?,
+    };
+    // Sanity floors only: same as profile 0, they reject garbage headers
+    // without rejecting spec-legal small geometries.
+    ensure!(root.segment_size >= 0x1000, "segment size too small");
+    ensure!(root.segments_per_cluster >= 1, "no segments per cluster");
+
+    // Walk clusters from the file size: each cluster header is padded to
+    // the full segments-per-cluster capacity, so `cur` is the exact file
+    // offset of the next cluster header.
+    let entry_size = root.segment_header_len();
+    let spc = root.segments_per_cluster as usize;
+    let headers_size = entry_size * spc;
+    let ch_size = headers_size + 32 + 32 * spc;
+    let mut clusters: Vec<Cluster> = Vec::new();
+    let mut total_segments = 0u64;
+    let mut cur = chmac_off + MAC_LEN;
+    let mut cidx = 0u32;
+    loop {
+        if cur + ch_size > file.len() {
+            break; // cluster header not fully present (truncated archive)
+        }
+        let ck = kdf::cluster_key(&main, cidx);
+        let ch_mat = kdf::cluster_header_material(&ck);
+        ensure!(
+            ch_mat.len() == DATA_KEY_MATERIAL_LEN,
+            "bad cluster-header material length"
+        );
+        let headers_enc = &file[cur..cur + headers_size];
+        let macs = &file[cur + headers_size..cur + ch_size];
+        let stored = if cidx == 0 {
+            mac_at(file, chmac_off)
+        } else {
+            mac_at(file, clusters[(cidx - 1) as usize].nextchmac_off)
+        };
+        let mut mac_data = Vec::with_capacity(macs.len() + headers_enc.len() + 8);
+        mac_data.extend_from_slice(macs);
+        mac_data.extend_from_slice(headers_enc);
+        mac_data.extend_from_slice(&(macs.len() as u64).to_le_bytes());
+        ensure!(
+            kdf::mac_raw(&ch_mat[0..32], &mac_data) == *stored,
+            "cluster {cidx} header MAC mismatch"
+        );
+        let mut headers = headers_enc.to_vec();
+        lzfse::aes_ctr_decrypt(&ch_mat, &mut headers)?;
+        let mut n_segs = 0u32;
+        let mut doff = cur + ch_size;
+        for s in 0..spc {
+            let ho = s * entry_size;
+            let orig = u32le(&headers, ho)?;
+            let comp = u32le(&headers, ho + 4)? as usize;
+            if comp == 0 {
+                break; // unused trailing segments
+            }
+            ensure!(
+                orig <= root.segment_size,
+                "cluster {cidx} segment {s}: decoded size {orig} exceeds segment_size {}",
+                root.segment_size
+            );
+            if doff + comp > file.len() {
+                // Truncated archive (e.g. head-only fetch): the segment's
+                // stored bytes are not fully present — stop at this segment.
+                break;
+            }
+            n_segs += 1;
+            doff += comp;
+        }
+        if n_segs == 0 {
+            // No segment data is present: the archive is too truncated to
+            // report anything.
+            break;
+        }
+        clusters.push(Cluster {
+            index: cidx,
+            segs: n_segs,
+            seghdrs_off: cur,
+            nextchmac_off: cur + headers_size,
+            seghmacs_off: cur + headers_size + 32,
+            data_off: cur + ch_size,
+            decrypted_headers: Some(headers),
+        });
+        total_segments += u64::from(n_segs);
+        cur = doff;
+        cidx += 1;
+    }
+
+    Ok(Envelope {
+        file,
+        profile,
+        scrypt_strength,
+        auth,
+        auth_start,
+        auth_end,
+        sig_off,
+        pubkey_off: sig_off,
+        mainsalt_off: main_salt_off,
+        rootmac_off,
+        root_off,
+        chmac_off,
+        root,
+        clusters,
+        total_segments,
+        main: Some(main),
+    })
+}
+
 impl<'a> Envelope<'a> {
-    pub fn parse(file: &'a [u8]) -> Result<Self> {
+    pub fn parse(file: &'a [u8], key: Option<&MainKey>) -> Result<Self> {
         ensure!(
             file.len() > 12 && &file[0..4] == b"AEA1",
             "not an AEA file (bad magic)"
         );
         let profile = Profile([file[4], file[5], file[6]]);
         ensure!(
-            profile == Profile::NO_ENC_SIGNED,
-            "profile {} (encrypted variants) not implemented yet; only profile 0 (no encryption, signed)",
+            profile == Profile::NO_ENC_SIGNED || profile.id() == 1,
+            "profile {} not implemented yet; supported: 0 (no encryption, signed) \
+             and 1 (symmetric encryption)",
             profile.id()
         );
+        if profile.encrypted() && key.is_none() {
+            bail!(
+                "profile {} is encrypted: supply the FCS key file with --fcs-key",
+                profile.id()
+            );
+        }
         let scrypt_strength = file[7];
         let authsize = u32le(file, 8)? as usize;
         let auth_start = 12usize;
@@ -252,6 +456,19 @@ impl<'a> Envelope<'a> {
         if profile.signed() {
             off += SIGNATURE_LEN;
         }
+
+        if profile.encrypted() {
+            return parse_profile1(
+                file,
+                auth,
+                auth_start,
+                auth_end,
+                sig_off,
+                off,
+                key.expect("checked above"),
+            );
+        }
+
         // Profile 0: random 32-byte key from which the main key is derived.
         let pubkey_off = off;
         off += 32;
@@ -347,6 +564,7 @@ impl<'a> Envelope<'a> {
                 nextchmac_off,
                 seghmacs_off,
                 data_off,
+                decrypted_headers: None,
             });
             idx += u64::from(n);
             cidx += 1;
@@ -378,21 +596,29 @@ impl<'a> Envelope<'a> {
             root,
             clusters,
             total_segments,
+            main: None,
         })
     }
 
     /// Every segment, in payload order. The geometry was validated by
     /// [`Self::parse`], so this walk cannot fail.
-    pub fn segments(&self) -> impl Iterator<Item = Segment<'a>> + '_ {
+    pub fn segments(&self) -> impl Iterator<Item = Segment<'a, '_>> + '_ {
         let file = self.file;
         let seg_hdr_len = self.root.segment_header_len();
         let spc = self.root.segments_per_cluster;
         self.clusters.iter().flat_map(move |c| {
             let mut doff = c.data_off;
+            // Profile 1 stores its segment headers encrypted; parse()
+            // decrypted them into the cluster. Profile 0 reads plaintext
+            // headers straight from the file.
+            let hdr_region: &[u8] = c
+                .decrypted_headers
+                .as_deref()
+                .unwrap_or(&file[c.seghdrs_off..c.seghdrs_off + c.segs as usize * seg_hdr_len]);
             (0..c.segs).map(move |s| {
-                let ho = c.seghdrs_off + s as usize * seg_hdr_len;
-                let orig = u32le(file, ho).expect("validated by parse");
-                let comp = u32le(file, ho + 4).expect("validated by parse");
+                let ho = s as usize * seg_hdr_len;
+                let orig = u32le(hdr_region, ho).expect("validated by parse");
+                let comp = u32le(hdr_region, ho + 4).expect("validated by parse");
                 let data_off = doff;
                 doff += comp as usize;
                 Segment {
@@ -400,7 +626,7 @@ impl<'a> Envelope<'a> {
                     cluster: c.index,
                     orig,
                     comp,
-                    cksum: &file[ho + 8..ho + seg_hdr_len],
+                    cksum: &hdr_region[ho + 8..ho + seg_hdr_len],
                     mac: mac_at(file, c.seghmacs_off + s as usize * MAC_LEN),
                     data: &file[data_off..doff],
                     data_off,
@@ -445,19 +671,71 @@ impl<'a> Envelope<'a> {
         )
     }
 
-    pub fn verify_mac(&self, signing_point: &[u8]) -> Result<MacReport> {
-        ensure!(
-            !self.profile.encrypted(),
-            "MAC verification for encrypted profiles not implemented"
-        );
+    pub fn verify_mac(&self, signing_point: &[u8]) -> MacReport {
         let main = self.main_key(signing_point);
         let headers = self.verify_header_macs(&main);
-        Ok(MacReport {
+        MacReport {
             root_mac_ok: headers.root_ok,
             cluster_macs_ok: headers.clusters_ok,
             chmac_variant: headers.chmac_variant,
             segmac_failed: self.verify_segment_macs(&main),
-        })
+        }
+    }
+
+    /// MAC verification for profile 1, where the main key comes from the FCS
+    /// key rather than the signing public key. The root-header MAC is checked
+    /// during parsing (it gates decryption), so here it is reported as ok.
+    pub fn verify_mac_encrypted(&self, main: &Key) -> MacReport {
+        let mut cluster_macs_ok = true;
+        let mut segmac_failed = Vec::new();
+        let entry_size = if self.root.checksum == Checksum::Sha256 {
+            40
+        } else {
+            8
+        };
+        let spc = self.root.segments_per_cluster as usize;
+        let headers_size = entry_size * spc;
+        let ch_size = headers_size + 32 + 32 * spc;
+        for cluster in &self.clusters {
+            let ck = kdf::cluster_key(main, cluster.index);
+            let ch_mat = kdf::cluster_header_material(&ck);
+            let headers_enc = &self.file[cluster.seghdrs_off..cluster.seghdrs_off + headers_size];
+            let macs =
+                &self.file[cluster.seghdrs_off + headers_size..cluster.seghdrs_off + ch_size];
+            let stored = if cluster.index == 0 {
+                mac_at(self.file, self.chmac_off)
+            } else {
+                mac_at(self.file, cluster.nextchmac_off)
+            };
+            let mut mac_data = Vec::with_capacity(macs.len() + headers_enc.len() + 8);
+            mac_data.extend_from_slice(macs);
+            mac_data.extend_from_slice(headers_enc);
+            mac_data.extend_from_slice(&(macs.len() as u64).to_le_bytes());
+            if kdf::mac_raw(&ch_mat[0..32], &mac_data) != *stored {
+                cluster_macs_ok = false;
+            }
+        }
+        // Segment MACs: HMAC(key, ciphertext || u64le(0)) over the stored
+        // (encrypted) segment bytes.
+        let spc = self.root.segments_per_cluster;
+        let ckeys: Vec<Key> = self
+            .clusters
+            .iter()
+            .map(|c| kdf::cluster_key(main, c.index))
+            .collect();
+        for seg in self.segments() {
+            let local = seg.index - seg.cluster * spc;
+            let s_mat = kdf::segment_material(&ckeys[seg.cluster as usize], local);
+            if kdf::mac(&s_mat[0..32], seg.data, b"").as_slice() != seg.mac {
+                segmac_failed.push(seg.index);
+            }
+        }
+        MacReport {
+            root_mac_ok: true,
+            cluster_macs_ok,
+            chmac_variant: Some(0),
+            segmac_failed,
+        }
     }
 
     /// Root + cluster header MACs only — microseconds, no segment pass.
@@ -523,12 +801,21 @@ impl<'a> Envelope<'a> {
             .collect();
         let spc = self.root.segments_per_cluster;
         let segs: Vec<Segment> = self.segments().collect();
+        let encrypted = self.profile.encrypted();
         let mut failed: Vec<u32> = par_chunks(&segs, nthreads, |part| {
             part.iter()
                 .filter(|sg| {
                     let local = sg.index - sg.cluster * spc;
-                    let segkey = kdf::segment_key(&ckeys[sg.cluster as usize], local);
-                    kdf::mac(&segkey, sg.data, b"") != *sg.mac
+                    let ck = &ckeys[sg.cluster as usize];
+                    // Profile 0 stores 32-byte HMAC keys; profile 1 derives
+                    // 80-byte material (HMAC key + AES key + IV).
+                    let mat = kdf::segment_material(ck, local);
+                    let segkey: &[u8] = if encrypted {
+                        &mat[0..32]
+                    } else {
+                        &kdf::segment_key(ck, local)
+                    };
+                    kdf::mac(segkey, sg.data, b"").as_slice() != sg.mac
                 })
                 .map(|sg| sg.index)
                 .collect::<Vec<_>>()
@@ -549,14 +836,35 @@ impl<'a> Envelope<'a> {
             self.root.checksum == Checksum::Sha256,
             "checksum verification currently supports SHA-256 only"
         );
-        ensure!(
-            self.root.compression == Compression::Lzma,
-            "checksum verification implemented for LZMA segments only"
-        );
+        let encrypted = self.profile.encrypted();
+        if !encrypted {
+            ensure!(
+                self.root.compression == Compression::Lzma,
+                "checksum verification implemented for LZMA segments only"
+            );
+        }
+        // Profile 1: derive the cluster keys once, then hand the segment
+        // material context to each checksum check.
+        let ckeys: Vec<Key> = if encrypted {
+            let main = self
+                .main
+                .as_ref()
+                .expect("profile 1 parses with a main key");
+            self.clusters
+                .iter()
+                .map(|c| kdf::cluster_key(main, c.index))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ctx = ChecksumCtx {
+            ckeys: &ckeys,
+            spc: self.root.segments_per_cluster,
+        };
         let segs: Vec<Segment> = self.segments().collect();
         let failed: Vec<u32> = par_chunks(&segs, threads, |part| {
             part.iter()
-                .filter(|sg| !checksum_ok(sg, dec))
+                .filter(|sg| !checksum_ok(sg, encrypted.then_some(&ctx), dec))
                 .map(|sg| sg.index)
                 .collect::<Vec<_>>()
         })
@@ -567,10 +875,36 @@ impl<'a> Envelope<'a> {
     }
 }
 
+/// Per-cluster context for profile-1 checksum verification.
+struct ChecksumCtx<'a> {
+    ckeys: &'a [Key],
+    spc: u32,
+}
+
 /// Whether `seg`'s decoded bytes match its SHA-256 checksum. A segment that
 /// fails to decode fails its checksum.
-fn checksum_ok(seg: &Segment, dec: XzDecoder) -> bool {
-    let digest = if seg.data.len() == seg.orig as usize {
+fn checksum_ok(seg: &Segment<'_, '_>, ctx: Option<&ChecksumCtx<'_>>, dec: XzDecoder) -> bool {
+    let digest = if let Some(ctx) = ctx {
+        // Profile 1: the stored bytes are AES-CTR-encrypted. Decrypt, then
+        // LZFSE-decode when the segment is compressed (comp != orig) — the
+        // checksum covers the final plaintext.
+        let ck = &ctx.ckeys[seg.cluster as usize];
+        let local = seg.index - seg.cluster * ctx.spc;
+        let s_mat = kdf::segment_material(ck, local);
+        let mut plain = seg.data.to_vec();
+        if lzfse::aes_ctr_decrypt(&s_mat, &mut plain).is_err() {
+            return false;
+        }
+        if seg.comp == seg.orig {
+            Sha256::digest(&plain)
+        } else {
+            let mut buf = vec![0u8; seg.orig as usize];
+            if lzfse::decode(&plain, &mut buf, seg.orig as usize).is_err() {
+                return false;
+            }
+            Sha256::digest(&buf)
+        }
+    } else if seg.data.len() == seg.orig as usize {
         Sha256::digest(seg.data)
     } else {
         match xz::decode(seg.data, seg.orig as usize, dec, true) {
@@ -639,4 +973,67 @@ fn try_parse_pairs(blob: &[u8], inclusive: bool) -> Option<Vec<(String, Vec<u8>)
         pos += plen;
     }
     (pos == blob.len() && !out.is_empty() || blob.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End-to-end profile-1 parse + verification on the truncated fixture.
+    /// The fixture is a head-only fetch of a real archive (cluster 0's
+    /// header is fully present; only segment 0's data is), so geometry is
+    /// bounded by what the file actually holds.
+    #[test]
+    fn profile1_fixture_parses_and_verifies() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let Ok(data) = std::fs::read(dir.join("141-11453-183-head.bin")) else {
+            eprintln!("skipping: fixture 141-11453-183-head.bin not present");
+            return;
+        };
+        let Ok(pem) = std::fs::read(dir.join("141-11453-183-fcs-key.pem")) else {
+            eprintln!("skipping: fixture key not present");
+            return;
+        };
+        let auth_len = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let auth = &data[12..12 + auth_len];
+        let symkey = crate::hpke::unwrap_fcs_key(auth, &pem).expect("FCS key unwrap");
+        let key = MainKey::from_slice(&symkey).expect("main key slice");
+
+        let env = Envelope::parse(&data, Some(&key)).expect("profile 1 parse");
+        assert_eq!(env.profile.id(), 1);
+        assert_eq!(env.root.original_size, 6813646848);
+        assert_eq!(env.root.segment_size, 1048576);
+        assert_eq!(env.root.segments_per_cluster, 256);
+        assert_eq!(env.clusters.len(), 1);
+        assert_eq!(env.total_segments, 1);
+
+        // The root-header MAC is checked during parsing; the full report
+        // covers the cluster and segment MACs.
+        let main = env.main.as_ref().expect("profile 1 parses with a main key");
+        let mac = env.verify_mac_encrypted(main);
+        assert!(mac.root_mac_ok);
+        assert!(mac.cluster_macs_ok, "cluster header MAC mismatch");
+        assert!(
+            mac.segmac_failed.is_empty(),
+            "segment MAC failures: {:?}",
+            mac.segmac_failed
+        );
+
+        let segs: Vec<Segment> = env.segments().collect();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].orig, 1048576);
+        assert_eq!(segs[0].comp, 19318);
+        assert_eq!(
+            crate::sigverify::hex(segs[0].cksum),
+            "d7615d202b3700ca7d56bd6aaffa6a92ecf92beb8caccbc40907f58a3819b457"
+        );
+
+        // Checksum pass: AES-CTR decrypt + LZFSE decode + SHA-256 of the
+        // decompressed plaintext.
+        let (passed, failed) = env
+            .verify_checksums(1, crate::xz::XzDecoder::LzmaTurbo)
+            .expect("checksum pass");
+        assert!(failed.is_empty(), "checksum failures: {failed:?}");
+        assert_eq!(passed, 1);
+    }
 }

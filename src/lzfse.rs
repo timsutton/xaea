@@ -9,7 +9,6 @@
 use aes::Aes256;
 use anyhow::{Result, bail};
 use ctr::cipher::{KeyIvInit, StreamCipher};
-use std::io::Write;
 
 /// `COMPRESSION_LZFSE` in `<compression.h>`.
 const COMPRESSION_LZFSE: i32 = 0x801;
@@ -40,15 +39,6 @@ pub fn decode(src: &[u8], dst: &mut [u8], expected: usize) -> Result<()> {
         return Ok(());
     }
     lz_decode(src, dst)
-}
-
-/// Decodes an LZFSE stream, writing the output to `out`, which must accept
-/// exactly `expected` bytes.
-pub fn decode_to<W: Write>(src: &[u8], out: &mut W, expected: usize) -> Result<()> {
-    let mut buf = vec![0u8; expected];
-    decode(src, &mut buf, expected)?;
-    out.write_all(&buf)?;
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]

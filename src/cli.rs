@@ -45,6 +45,10 @@ pub struct InspectArgs {
     /// Skip the full checksum pass when used with --verify
     #[arg(long)]
     pub no_checksums: bool,
+    /// Path to the FCS private key (PEM) that unwraps the symmetric key of an
+    /// encrypted archive. Required for encrypted profiles (e.g. profile 1).
+    #[arg(long)]
+    pub fcs_key: Option<PathBuf>,
     /// LZMA decoder: `lzma-turbo` (Rust port of 7-Zip's decoder, the
     /// default), `liblzma` (vendored xz-utils) or `libcompression` (Apple's
     /// OS-provided library; macOS only)

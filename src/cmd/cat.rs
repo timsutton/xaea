@@ -25,7 +25,7 @@ pub fn run(args: &CatArgs) -> Result<()> {
     // same member.
     let want = sanitize(args.member.as_bytes()).with_exit(Exit::Usage)?;
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map).with_exit(Exit::Rejected)?;
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     if env.profile.encrypted() {
         bail_exit!(
             Exit::Rejected,

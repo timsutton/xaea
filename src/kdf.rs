@@ -59,6 +59,14 @@ pub fn main_key(ikm: &[u8], main_salt: &[u8], header_4_8: &[u8], signing_point: 
     hkdf(ikm, main_salt, &info)
 }
 
+/// Profile-1 main key: no signing point — the IKM is the FCS symmetric
+/// key recovered out-of-band and the info is `"AEA_AMK"` + bytes 4..8 of
+/// the file header (the u32le profile).
+pub fn main_key_sym(symkey: &[u8], main_salt: &[u8], header_4_8: &[u8]) -> Key {
+    let info = [b"AEA_AMK".as_slice(), header_4_8].concat();
+    hkdf(symkey, main_salt, &info)
+}
+
 pub fn root_header_key(main_key: &Key) -> Key {
     hkdf(main_key, b"", b"AEA_RHEK")
 }

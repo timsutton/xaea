@@ -22,7 +22,7 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
     // `archive.src` (for `-`, the spool) must outlive extract(), which
     // re-opens the path for its pread segment reads.
     let archive = open_archive(&args.file)?;
-    let env = Envelope::parse(&archive.map).with_exit(Exit::Rejected)?;
+    let env = Envelope::parse(&archive.map, None).with_exit(Exit::Rejected)?;
     if env.profile.encrypted() {
         bail_exit!(
             Exit::Rejected,

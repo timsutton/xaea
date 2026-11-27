@@ -24,7 +24,16 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     args.decoder.check_available().with_exit(Exit::Usage)?;
     let archive = open_archive(&args.file)?;
     let file = &archive.map[..];
-    let env = Envelope::parse(file).with_exit(Exit::Rejected)?;
+    // Encrypted profiles need the FCS key file; profile 0 derives its main
+    // key from the signing certificate and takes no key material.
+    let key = match args.fcs_key.as_deref() {
+        Some(path) => {
+            let symkey = super::fcs_key_for(file, path).with_exit(Exit::Unreadable)?;
+            Some(crate::envelope::MainKey::from_slice(&symkey).with_exit(Exit::Unreadable)?)
+        }
+        None => None,
+    };
+    let env = Envelope::parse(file, key.as_ref()).with_exit(Exit::Rejected)?;
     let verification = args.verify.then(|| verify(&env, args)).transpose()?;
     let checks = verification.as_ref().map_or(&[][..], |v| &v.checks[..]);
 
@@ -33,7 +42,7 @@ pub fn run(args: &InspectArgs) -> Result<()> {
             "file": args.file.file_name().map(|s| s.to_string_lossy().to_string()),
             "format": "AEA1",
             "profile": env.profile.id(),
-            "profile_name": "hkdf_sha256_hmac__none__ecdsa_p256",
+            "profile_name": profile_name(env.profile),
             "scrypt_strength": env.scrypt_strength,
             "file_size": file.len(),
             "auth": env.auth.iter().map(|(k, v)| json!({"key": k, "bytes": v.len()})).collect::<Vec<_>>(),
@@ -61,9 +70,10 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     }
 
     println!(
-        "{}  —  AEA1, profile {} (no encryption, signed)",
+        "{}  —  AEA1, profile {} ({})",
         archive.src.label,
-        env.profile.id()
+        env.profile.id(),
+        profile_name(env.profile)
     );
     println!(
         "  compressed {:.2} GiB → original {} (ratio {:.2}×)",
@@ -80,7 +90,14 @@ pub fn run(args: &InspectArgs) -> Result<()> {
         env.root.checksum,
         env.root.compression,
     );
-    println!("  geometry: segment walk lands exactly on EOF ✓");
+    if env.profile.encrypted() {
+        println!(
+            "  geometry: {} segment(s) present (encrypted archive may be truncated)",
+            env.total_segments
+        );
+    } else {
+        println!("  geometry: segment walk lands exactly on EOF ✓");
+    }
     for (k, v) in &env.auth {
         println!("  auth: {k} ({} bytes)", v.len());
     }
@@ -102,9 +119,21 @@ pub fn run(args: &InspectArgs) -> Result<()> {
     Ok(())
 }
 
+/// Human-readable profile label.
+fn profile_name(profile: crate::envelope::Profile) -> &'static str {
+    match profile.id() {
+        0 => "no encryption, signed",
+        1 => "symmetric encryption",
+        _ => "unknown",
+    }
+}
+
 /// Run every check `--verify` asks for. Checks that run and fail are
 /// reported, not raised; errors are archives too malformed to check.
 fn verify(env: &Envelope, args: &InspectArgs) -> Result<Verification> {
+    if env.profile.encrypted() {
+        return verify_encrypted(env, args);
+    }
     // Signature & chain first: the leaf signing key feeds the main-key KDF.
     let chain = env
         .certificate_chain()
@@ -117,10 +146,7 @@ fn verify(env: &Envelope, args: &InspectArgs) -> Result<Verification> {
         &env.signed_prefix(),
     )
     .with_exit(Exit::Verification)?;
-    let mac = env
-        .verify_mac(auth.certs[0].point())
-        .context("MAC verification")
-        .with_exit(Exit::Verification)?;
+    let mac = env.verify_mac(auth.certs[0].point());
     let mut ok = mac.root_mac_ok && mac.cluster_macs_ok && mac.segmac_failed.is_empty();
     let mut checks = vec![json!({
         "root_mac_ok": mac.root_mac_ok,
@@ -157,6 +183,39 @@ fn verify(env: &Envelope, args: &InspectArgs) -> Result<Verification> {
     Ok(Verification {
         checks,
         certs: auth.certs,
+        ok,
+    })
+}
+
+/// `--verify` for encrypted profiles: the root-header MAC is checked during
+/// parsing, so this covers the cluster/segment MACs (raw, HMAC-only) and
+/// the segment checksums. No signature or chain checks — encrypted
+/// archives carry no signing certificate.
+fn verify_encrypted(env: &Envelope, args: &InspectArgs) -> Result<Verification> {
+    let main = env.main.as_ref().expect("profile 1 parses with a main key");
+    let mac = env.verify_mac_encrypted(main);
+    let mut ok = mac.root_mac_ok && mac.cluster_macs_ok && mac.segmac_failed.is_empty();
+    let mut checks = vec![json!({
+        "root_mac_ok": mac.root_mac_ok,
+        "cluster_macs_ok": mac.cluster_macs_ok,
+        "chmac_salt_variant": mac.chmac_variant,
+        "segment_macs_ok": mac.segmac_failed.is_empty(),
+        "segment_macs_failed": mac.segmac_failed,
+    })];
+    if !args.no_checksums {
+        let t0 = Instant::now();
+        let (passed, failed) = env
+            .verify_checksums(std::thread::available_parallelism()?.get(), args.decoder)
+            .with_exit(Exit::Verification)?;
+        ok &= failed.is_empty();
+        checks.push(json!({
+            "checksums_ok": passed, "checksums_failed": failed,
+            "checksum_seconds": t0.elapsed().as_secs_f64(),
+        }));
+    }
+    Ok(Verification {
+        checks,
+        certs: Vec::new(),
         ok,
     })
 }
