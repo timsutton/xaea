@@ -9,6 +9,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
+* `xaea inspect` now supports profile 1 (SymmetricEncryption) archives, e.g.
+  Apple restore images distributed via IPSW: HPKE-unwrap the FCS symmetric
+  key from a PEM key file with `--fcs-key`, verify the root/cluster/segment
+  MACs and the LZFSE-decoded SHA-256 checksums with `--verify`. `extract`
+  and `cat` refuse these archives with a clear message for now (their
+  payloads are restore images, not AA01 streams).
 
 ## 0.2.1 - 2026-11-24
 
