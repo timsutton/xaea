@@ -156,13 +156,21 @@ pub struct Opts {
     pub verify: bool,
     /// LZMA implementation for segment decoding.
     pub decoder: XzDecoder,
-    /// Store files with transparent APFS compression (decmpfs, LZBITMAP),
-    /// as Apple's extractor does. Already resolved against the output
-    /// volume by [`resolve_compress`].
-    pub compress: bool,
-    /// Which compression policy to use when storing compressed. Ignored
-    /// when `compress` is false.
+    /// The resolved compression config (policy + codec), or `None` to
+    /// write plain files. Already probed against the output volume by
+    /// [`resolve_compress`].
+    pub compression: Option<Compression>,
+    /// The mode the user asked for (for `--json` output). Ignored when
+    /// `compression` is `None`.
     pub compress_mode: CompressMode,
+}
+
+/// The resolved compression config: the policy and codec to store files
+/// with. Carried to the writers; the encoder is built from it.
+#[derive(Clone, Copy, Debug)]
+pub struct Compression {
+    pub policy: decmpfs::Policy,
+    pub codec: decmpfs::Codec,
 }
 
 /// Which compression policy to use when storing compressed.
@@ -176,6 +184,12 @@ pub enum CompressMode {
     /// only files that save at least 10% — less CPU on the writer threads,
     /// more disk.
     Fast,
+    /// xaea-only, macOS 27+: LZ4 instead of LZBITMAP — the fastest codec
+    /// the kernel reads, with the fast policy. Produces files Apple's
+    /// extractor would not write (and unreadable on older macOS), so it is
+    /// opt-in and never the default. Falls back to LZBITMAP when the
+    /// kernel does not accept LZ4.
+    Lz4,
 }
 
 impl CompressMode {
@@ -183,7 +197,15 @@ impl CompressMode {
     pub fn policy(self) -> decmpfs::Policy {
         match self {
             CompressMode::Balanced => decmpfs::Policy::balanced(),
-            CompressMode::Fast => decmpfs::Policy::fast(),
+            CompressMode::Fast | CompressMode::Lz4 => decmpfs::Policy::fast(),
+        }
+    }
+
+    /// The codec this mode resolves to.
+    pub fn codec(self) -> decmpfs::Codec {
+        match self {
+            CompressMode::Balanced | CompressMode::Fast => decmpfs::Codec::Lzbitmap,
+            CompressMode::Lz4 => decmpfs::Codec::Lz4,
         }
     }
 
@@ -192,6 +214,7 @@ impl CompressMode {
         match self {
             CompressMode::Balanced => "balanced",
             CompressMode::Fast => "fast",
+            CompressMode::Lz4 => "lz4",
         }
     }
 }
@@ -212,23 +235,61 @@ pub enum Compress {
 /// (FAT/exFAT, most network shares, Linux). Creates `out` when it has to
 /// probe it. Called before the writer count is chosen, since compressing
 /// wants more writers.
-pub fn resolve_compress(out: &Path, want: Compress, dry: bool) -> Result<bool> {
+///
+/// For `--compress-mode lz4` the kernel is probed for LZ4 first; when it
+/// does not accept LZ4 (macOS < 27), the run falls back to LZBITMAP with
+/// the same policy and a warning, so the user knows the files are not
+/// LZ4-compressed.
+pub fn resolve_compress(
+    out: &Path,
+    want: Compress,
+    dry: bool,
+    mode: CompressMode,
+) -> Result<Option<Compression>> {
     if want == Compress::Off || dry {
-        return Ok(false);
+        return Ok(None);
     }
     std::fs::create_dir_all(out).with_context(|| format!("mkdir {}", out.display()))?;
-    Ok(match decmpfs::probe(out) {
-        Ok(()) => true,
+    let policy = mode.policy();
+    let codec = mode.codec();
+    match decmpfs::probe(out, codec) {
+        Ok(()) => Ok(Some(Compression { policy, codec })),
         Err(e) => {
-            if want == Compress::On {
-                eprintln!(
-                    "warning: writing uncompressed files: {} can't hold compressed files ({e:#})",
-                    out.display()
-                );
+            if codec == decmpfs::Codec::Lz4 {
+                // The kernel does not accept LZ4: fall back to LZBITMAP
+                // with the same policy.
+                match decmpfs::probe(out, decmpfs::Codec::Lzbitmap) {
+                    Ok(()) => {
+                        eprintln!(
+                            "warning: this kernel does not accept LZ4-compressed files ({e:#}); \
+                             falling back to LZBITMAP"
+                        );
+                        Ok(Some(Compression {
+                            policy,
+                            codec: decmpfs::Codec::Lzbitmap,
+                        }))
+                    }
+                    Err(e2) => {
+                        if want == Compress::On {
+                            eprintln!(
+                                "warning: writing uncompressed files: {} can't hold compressed files ({e2:#})",
+                                out.display()
+                            );
+                        }
+                        Ok(None)
+                    }
+                }
+            } else {
+                if want == Compress::On {
+                    eprintln!(
+                        "warning: writing uncompressed files: {} can't hold compressed files ({e:#})",
+                        out.display()
+                    );
+                }
+                Ok(None)
             }
-            false
         }
-    })
+    }
 }
 
 /// Enforce every structural guarantee that does not need a full file pass,
@@ -308,8 +369,8 @@ fn extract_body(
         std::fs::create_dir_all(&opts.out)
             .with_context(|| format!("mkdir {}", opts.out.display()))?;
     }
-    let compress = opts.compress && !opts.dry;
-    let policy = compress.then(|| opts.compress_mode.policy());
+    let compress = opts.compression.is_some() && !opts.dry;
+    let compression = opts.compression.filter(|_| !opts.dry);
     let segs: Arc<[SegInfo]> = env
         .segments()
         .map(|s| SegInfo::new(&s, opts.verify))
@@ -333,7 +394,7 @@ fn extract_body(
         .map(|(i, rx)| {
             let root = opts.out.clone();
             let load = load.clone().map(|l| (l, i));
-            let writer = Writer::new(root, file_default, policy, nw, load);
+            let writer = Writer::new(root, file_default, compression, nw, load);
             thread::spawn(move || writer.run(&rx))
         })
         .collect();

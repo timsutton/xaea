@@ -181,3 +181,14 @@ by hand and reading them back through the kernel (`src/decmpfs.rs`):
 * **Gotcha:** the kernel checks xattr writes against the *file's mode*, not
   the fd's open mode, so a 0444 file refuses `fsetxattr` with EACCES even on
   a writable fd. Apply the mode after storing.
+
+### LZ4 (opt-in, macOS 27+)
+
+The kernel also accepts **type 15** (LZ4, inline) and **type 16** (LZ4,
+resource fork) on macOS 27+, written by libcompression's `COMPRESSION_LZ4`
+(0x100). The chunk layout is the same as LZBITMAP's: one 64 KiB chunk per
+`n`, `0xFF` + raw bytes for an incompressible chunk, `n + 1` u32 offsets in
+the fork. `xaea --compress-mode lz4` uses it — the fastest codec the kernel
+reads, at a worse ratio — but it is not what Apple writes, needs macOS 27+
+to read back, and is never the default. It falls back to LZBITMAP with a
+warning when the kernel does not accept it.
