@@ -156,6 +156,8 @@ pub(super) struct Writer {
     /// Open file being written; closed when the next Open, a Flush, or the
     /// channel end arrives.
     cur: Option<OpenFile>,
+    /// The compression policy, when this run stores compressed files.
+    policy: Option<decmpfs::Policy>,
     /// Set when this run stores files compressed.
     enc: Option<decmpfs::Encoder>,
     /// Files the volume refused to store compressed (written plain).
@@ -169,7 +171,7 @@ impl Writer {
     pub(super) fn new(
         root: PathBuf,
         file_default: u32,
-        compress: bool,
+        policy: Option<decmpfs::Policy>,
         link_workers: usize,
         load: Option<(Load, usize)>,
     ) -> Self {
@@ -178,7 +180,8 @@ impl Writer {
             file_default,
             link_workers,
             cur: None,
-            enc: compress.then(decmpfs::Encoder::new),
+            enc: policy.map(decmpfs::Encoder::new),
+            policy,
             refused: 0,
             load,
         }
@@ -273,8 +276,11 @@ impl Writer {
             r => r,
         }
         .with_context(|| format!("create {}", full.display()))?;
-        // Empty files stay plain, as Apple's extractor leaves them.
-        let compressing = size > 0 && self.enc.is_some();
+        // Empty files stay plain, as Apple's extractor leaves them. The
+        // policy's floor is the same idea with a size: small files carry a
+        // fixed per-file cost and save little disk, so they stay plain.
+        let compressing =
+            size > 0 && self.enc.is_some() && self.policy.is_some_and(|p| size >= p.min_file_bytes);
         // Skip fchmod when open(2) already produced the mode via the
         // umask default — see create_defaults() for the rationale.
         let chmod = (mode != self.file_default).then_some(mode);

@@ -60,6 +60,7 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
         verify: !args.no_verify,
         decoder: args.decoder,
         compress,
+        compress_mode: args.compress_mode,
     };
     let st = extract::extract(&env, &archive.src.path, &opts).with_exit(Exit::Extraction)?;
     let secs = t0.elapsed().as_secs_f64();
@@ -73,6 +74,7 @@ pub fn run(args: &ExtractArgs) -> Result<()> {
                 "verified": opts.verify,
                 "decoder": args.decoder.name(),
                 "decoders": opts.decoders, "writers": opts.writers, "readahead": opts.readahead,
+                "compress_mode": opts.compress_mode.name(),
                 "dirs": st.dirs, "files": st.files, "links": st.links,
                 "bytes": st.bytes, "compressed": st.compressed,
                 "seconds": secs, "mib_per_s": rate,

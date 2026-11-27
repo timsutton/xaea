@@ -7,6 +7,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+* `--compress-mode fast`: a faster compression policy for `xaea extract` that
+  skips files under 1 MiB, gives up after 1 MiB, and only keeps files that
+  save at least 10% — less CPU on the writer threads, more disk. The default
+  `--compress-mode balanced` keeps Apple's extractor policy unchanged.
 * Releases publish signed SLSA build provenance for the archives, checksums file
   and binaries; check one with `gh attestation verify <file> --repo timsutton/xaea`.
 

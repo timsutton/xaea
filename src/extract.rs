@@ -160,6 +160,40 @@ pub struct Opts {
     /// as Apple's extractor does. Already resolved against the output
     /// volume by [`resolve_compress`].
     pub compress: bool,
+    /// Which compression policy to use when storing compressed. Ignored
+    /// when `compress` is false.
+    pub compress_mode: CompressMode,
+}
+
+/// Which compression policy to use when storing compressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum CompressMode {
+    /// Apple's extractor's policy: compress everything that clearly pays
+    /// (the default).
+    #[default]
+    Balanced,
+    /// xaea-only: skip small files entirely, give up after 1 MiB, and keep
+    /// only files that save at least 10% — less CPU on the writer threads,
+    /// more disk.
+    Fast,
+}
+
+impl CompressMode {
+    /// The policy this mode resolves to.
+    pub fn policy(self) -> decmpfs::Policy {
+        match self {
+            CompressMode::Balanced => decmpfs::Policy::balanced(),
+            CompressMode::Fast => decmpfs::Policy::fast(),
+        }
+    }
+
+    /// Machine-readable name for `--json` output.
+    pub fn name(self) -> &'static str {
+        match self {
+            CompressMode::Balanced => "balanced",
+            CompressMode::Fast => "fast",
+        }
+    }
 }
 
 /// Whether to store files compressed. Either way, a volume that can't hold
@@ -275,6 +309,7 @@ fn extract_body(
             .with_context(|| format!("mkdir {}", opts.out.display()))?;
     }
     let compress = opts.compress && !opts.dry;
+    let policy = compress.then(|| opts.compress_mode.policy());
     let segs: Arc<[SegInfo]> = env
         .segments()
         .map(|s| SegInfo::new(&s, opts.verify))
@@ -298,7 +333,7 @@ fn extract_body(
         .map(|(i, rx)| {
             let root = opts.out.clone();
             let load = load.clone().map(|l| (l, i));
-            let writer = Writer::new(root, file_default, compress, nw, load);
+            let writer = Writer::new(root, file_default, policy, nw, load);
             thread::spawn(move || writer.run(&rx))
         })
         .collect();

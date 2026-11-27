@@ -41,10 +41,51 @@ const BLOCK: u64 = 4096;
 const RAW_MARK: u8 = 0xFF;
 const TYPE_INLINE: u32 = 13;
 const TYPE_RSRC: u32 = 14;
-/// After this many input bytes, give up on a file that has saved < 2%:
-/// archives, images and the large `.pkg` payloads never get better, and
-/// encoding them only to decode them again is wasted CPU.
-const GIVE_UP_AFTER: u64 = 2 << 20;
+/// How aggressively to compress. The writer consults this at open time
+/// (`min_file_bytes`) and the encoder consults it at every chunk
+/// (`give_up_after` / `floor_pct`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Policy {
+    /// Files smaller than this are never compressed; the writer stores them
+    /// plainly. Fixed per-file overhead (encoder, xattrs, flag) is a large
+    /// share of the work on small files and the absolute savings are tiny.
+    pub min_file_bytes: u64,
+    /// After this many fed bytes, a file that has saved less than
+    /// `floor_pct` percent is written plain. Archives, images and the
+    /// large `.pkg` payloads never get better, and encoding them only to
+    /// decode them again is wasted CPU.
+    pub give_up_after: u64,
+    /// The savings floor, in percent. A file must have saved at least this
+    /// much of the bytes fed so far, else it is written plain.
+    pub floor_pct: u64,
+}
+
+impl Policy {
+    /// Apple's extractor's policy (the default): give up after 2 MiB on a
+    /// file saving less than 2%.
+    pub fn balanced() -> Self {
+        Policy {
+            min_file_bytes: 0,
+            give_up_after: 2 << 20,
+            floor_pct: 2,
+        }
+    }
+    /// Faster, less disk-saving: skip small files entirely, give up after
+    /// 1 MiB, and only keep files that clearly save at least 10%.
+    pub fn fast() -> Self {
+        Policy {
+            min_file_bytes: 1 << 20,
+            give_up_after: 1 << 20,
+            floor_pct: 10,
+        }
+    }
+}
+
+/// Whether a file worth keeping, given `done` bytes fed and `stored` bytes
+/// of resource fork so far.
+fn worth_keeping(done: u64, stored: u64, policy: &Policy) -> bool {
+    !(done >= policy.give_up_after && stored * 100 >= done * (100 - policy.floor_pct))
+}
 
 #[cfg(target_os = "macos")]
 mod ffi {
@@ -202,6 +243,7 @@ pub enum Outcome {
 /// `abandon` part-way). Holds one file's compressed bytes in memory, which
 /// for an Xcode tree is at most a few tens of MiB.
 pub struct Encoder {
+    policy: Policy,
     scratch: Vec<u8>,
     /// Bytes of the current chunk not yet encoded (only when a chunk spans
     /// two pushes).
@@ -216,13 +258,14 @@ pub struct Encoder {
 
 impl Default for Encoder {
     fn default() -> Self {
-        Self::new()
+        Self::new(Policy::balanced())
     }
 }
 
 impl Encoder {
-    pub fn new() -> Self {
+    pub fn new(policy: Policy) -> Self {
         Encoder {
+            policy,
             scratch: vec![0u8; scratch_size().max(1)],
             stage: Vec::with_capacity(CHUNK),
             rsrc: Vec::new(),
@@ -283,7 +326,7 @@ impl Encoder {
         self.stage.extend_from_slice(data);
         let done = (self.next_chunk * CHUNK) as u64;
         let stored = (self.rsrc.len() - (self.nchunks + 1) * 4) as u64;
-        Ok(!(done >= GIVE_UP_AFTER && stored * 50 >= done * 49))
+        Ok(worth_keeping(done, stored, &self.policy))
     }
 
     fn chunk_len(&self, i: usize) -> usize {
@@ -409,7 +452,7 @@ pub fn probe(dir: &Path) -> Result<()> {
     let data: Vec<u8> = (0..CHUNK + 4000)
         .map(|i| b"xaea decmpfs probe "[i % 19])
         .collect();
-    let mut enc = Encoder::new();
+    let mut enc = Encoder::new(Policy::balanced());
     for (k, body) in [&data[..], &data[..100]].into_iter().enumerate() {
         let p = dir.join(format!(
             ".xaea-compression-probe-{}-{k}",
@@ -477,7 +520,7 @@ mod tests {
     fn roundtrip(dir: &Path, name: &str, body: &[u8], pieces: usize) -> Outcome {
         let p = dir.join(name);
         let f = File::create(&p).unwrap();
-        let mut enc = Encoder::new();
+        let mut enc = Encoder::new(Policy::balanced());
         enc.begin(body.len() as u64);
         let step = body.len().div_ceil(pieces.max(1)).max(1);
         let mut plain = false;
@@ -543,5 +586,45 @@ mod tests {
             Outcome::Plain
         );
         std::fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn balanced_matches_apples_policy() {
+        // Apple's extractor: give up after 2 MiB on a file saving < 2%.
+        let b = Policy::balanced();
+        assert_eq!(b.min_file_bytes, 0);
+        assert_eq!(b.give_up_after, 2 << 20);
+        assert_eq!(b.floor_pct, 2);
+        // <2% saved: not worth keeping. More than 2% saved: keep.
+        let done = b.give_up_after;
+        assert!(!worth_keeping(done, done * 99 / 100, &b));
+        assert!(worth_keeping(done, done * 97 / 100, &b));
+    }
+
+    #[test]
+    fn fast_is_stricter_and_skips_small_files() {
+        // Fast: skip small files, give up after 1 MiB, keep only >=10% saved.
+        let f = Policy::fast();
+        assert_eq!(f.min_file_bytes, 1 << 20);
+        assert_eq!(f.give_up_after, 1 << 20);
+        assert_eq!(f.floor_pct, 10);
+        // 5% saved: not worth keeping. More than 10% saved: keep.
+        let done = f.give_up_after;
+        assert!(!worth_keeping(done, done * 95 / 100, &f));
+        assert!(worth_keeping(done, done * 89 / 100, &f));
+    }
+
+    #[test]
+    fn give_up_only_after_the_threshold() {
+        // Under the give-up threshold, any savings keep the file.
+        let f = Policy::fast();
+        assert!(worth_keeping(f.give_up_after - 1, 99_999, &f));
+        // Above the threshold, a barely-saving file is dropped.
+        assert!(!worth_keeping(f.give_up_after, f.give_up_after - 1, &f));
     }
 }

@@ -118,6 +118,36 @@ fn synthetic_extract_fidelity_compressed() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Fast mode skips files under 1 MiB entirely: the synthetic archive is
+/// all small files, so every compressible one stays plain while balanced
+/// mode stores them compressed.
+#[cfg(target_os = "macos")]
+#[test]
+fn synthetic_extract_fidelity_fast_mode() {
+    use std::os::macos::fs::MetadataExt;
+    let (dir, out, stats) = extract_fidelity("fast", &["--compress-mode", "fast"]);
+    if stats["compressed"] != true {
+        eprintln!("SKIP flag checks: temp volume does not support compression");
+        fs::remove_dir_all(&dir).ok();
+        return;
+    }
+    let compressed =
+        |p: &str| fs::symlink_metadata(out.join(p)).unwrap().st_flags() & libc_uf_compressed() != 0;
+    for p in [
+        "T/plain.txt",
+        "T/exec.sh",
+        "T/readonly.txt",
+        "T/readonly-big.txt",
+        "T/setuid.bin",
+    ] {
+        assert!(
+            !compressed(p),
+            "{p} should stay plain under --compress-mode fast"
+        );
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(target_os = "macos")]
 fn libc_uf_compressed() -> u32 {
     0x20 // UF_COMPRESSED, <sys/stat.h>
